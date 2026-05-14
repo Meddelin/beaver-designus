@@ -102,6 +102,7 @@ export async function build(): Promise<void> {
               defaultTheme: ds.tokenAxisGrammar.defaultTheme,
             }
           : undefined,
+        cssVarPattern: ds.tokenCssVarPattern,
       });
       tokenGroupPaths = new Set(Object.keys(tokensResult.manifest.groups));
 

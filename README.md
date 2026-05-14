@@ -67,6 +67,10 @@ npm run test:e2e          # Playwright against running dev stack
 
 If your design systems live inside a corporate perimeter and can't be cloned out, but you can run an AI agent inside that perimeter, see [`docs/audit-by-local-agent.md`](docs/audit-by-local-agent.md). Hand the agent that file and your two DS repos; it produces a markdown report telling you whether the manifest pipeline will scan them cleanly or which assumptions need adjustment.
 
+## Bringing the project up in the perimeter
+
+After the audit, if you want the same in-perimeter agent to do the full bring-up — clone the DS repos, configure the manifest, regenerate the component map, adapt the runtime adapter to your corporate Qwen Code fork, start the server — hand it [`docs/setup-by-local-agent.md`](docs/setup-by-local-agent.md). You provide DS paths + the path to the Qwen binary; the agent writes `docs/setup-report.md` and the dev server is ready to open.
+
 ## Architecture
 
 The full spec is in [`ARCHITECTURE.md`](ARCHITECTURE.md) — 1300 lines, written before the code and kept current. Key decisions:

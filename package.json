@@ -9,6 +9,7 @@
     "dev:web": "vite --config web/vite.config.ts",
     "mcp": "tsx daemon/mcp-tools-server.ts",
     "manifest:build": "tsx packages/manifest/src/build.ts",
+    "manifest:scaffold-overrides": "tsx packages/manifest/src/scaffold-overrides.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",

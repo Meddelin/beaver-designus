@@ -55,14 +55,20 @@ export interface AxisGrammar {
   defaultTheme?: string;
 }
 
+const DEFAULT_CSS_VAR_PATTERN = "--{namespace}-{binding}-{variant}";
+
 export interface ExtractTokensOptions {
   upstreamVersion?: string;
   axisGrammar?: AxisGrammar;
+  /** Template for the emitted CSS custom property name per variant.
+   *  Placeholders: {namespace}, {binding}, {variant}. */
+  cssVarPattern?: string;
 }
 
 export function extractTokens(tokenRoot: string, opts: ExtractTokensOptions = {}): ExtractTokensResult {
   const upstreamVersion = opts.upstreamVersion ?? "fixture-0.1.0";
   const grammar: AxisGrammar = opts.axisGrammar ?? { pattern: DEFAULT_AXIS_KEY_RE };
+  const cssVarPattern = opts.cssVarPattern ?? DEFAULT_CSS_VAR_PATTERN;
   const namespaceFiles = discoverNamespaces(tokenRoot);
   const groups: Record<string, TokenGroup> = {};
 
@@ -81,7 +87,10 @@ export function extractTokens(tokenRoot: string, opts: ExtractTokensOptions = {}
           variants.push({
             name: variantName,
             values: Object.fromEntries(Object.entries(variantBody as Record<string, unknown>).map(([k, v]) => [k, String(v)])),
-            cssVar: `--${namespaceName}-${constName}-${variantName}`,
+            cssVar: cssVarPattern
+              .replace("{namespace}", namespaceName)
+              .replace("{binding}", constName)
+              .replace("{variant}", variantName),
           });
         }
         groups[groupPath] = {

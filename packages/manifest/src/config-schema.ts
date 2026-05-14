@@ -49,6 +49,13 @@ export const DesignSystemConfig = z
         defaultTheme: z.string().optional(),
       })
       .optional(),
+    /** Template for the CSS custom property name emitted per token variant.
+     *  Placeholders: {namespace}, {binding}, {variant}. Default produces
+     *  --animation-curve-expressive-standard. Override to match your DS's
+     *  CSS-var convention — e.g. "--tui-{namespace}-{binding}-{variant}"
+     *  for a "tui-" prefix, or "--{namespace}{binding}-{variant}" for no
+     *  separator between namespace and binding. */
+    tokenCssVarPattern: z.string().optional(),
     /** Optional: opt-in convention-map for token reconciliation (priority 3). */
     tokenConventionMap: z
       .object({
