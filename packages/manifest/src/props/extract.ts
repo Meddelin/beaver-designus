@@ -40,10 +40,20 @@ export function extractComponent(declarationFile: string, exportName: string): E
   const src = readFileSync(declarationFile, "utf8");
   const sf = ts.createSourceFile(declarationFile, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 
-  const propsTypeNode = locatePropsTypeNode(sf, exportName);
+  let propsTypeNode = locatePropsTypeNode(sf, exportName);
   const componentDecl = locateComponentDeclaration(sf, exportName);
 
   const description = componentDecl ? readJsDoc(componentDecl, src) : "";
+
+  // If propsTypeNode is a TypeReference (e.g. `ButtonProps`), try to
+  // dereference it to the matching interface/type-alias in the same file.
+  // Without this, `interface XProps { ... }` declared next to the component
+  // produces zero extracted props because collectMembers can't unwrap
+  // TypeReferenceNode.
+  if (propsTypeNode && ts.isTypeReferenceNode(propsTypeNode)) {
+    const dereffed = dereferenceLocalType(sf, propsTypeNode);
+    if (dereffed) propsTypeNode = dereffed;
+  }
 
   if (!propsTypeNode) {
     return { exportName, description, props: [], childrenShape: "none" };
@@ -109,19 +119,90 @@ function locatePropsTypeNode(sf: ts.SourceFile, exportName: string): ts.TypeNode
   });
   if (found) return found;
 
-  // Fallback: walk to the component declaration and pull the props parameter's type.
+  // Fallback: walk to the component declaration and pull props from various
+  // call/variable/forwardRef shapes used by real DSes.
   const decl = locateComponentDeclaration(sf, exportName);
   if (decl && ts.isFunctionDeclaration(decl) && decl.parameters[0]?.type) {
     return decl.parameters[0].type;
   }
   if (decl && ts.isVariableDeclaration(decl)) {
+    // 1. `const X: React.FC<Props> = (...)` / `const X: FunctionComponent<Props> = (...)`
+    //    The type annotation carries the props as its last type argument.
+    if (decl.type && ts.isTypeReferenceNode(decl.type) && decl.type.typeArguments?.length) {
+      const last = lastTypeReference(decl.type.typeArguments);
+      if (last) return last;
+    }
+
     const init = decl.initializer;
+
+    // 2. `const X = forwardComponent<'button', Props>((props, ref) => ...)`
+    //    `const X = createButton<Props>(useButton)`
+    //    `const X = forwardRef<Ref, Props>((props, ref) => ...)`
+    //    `const X = styled(Base)<Props>` — and other HOC-call patterns.
+    //    Pull the LAST TypeReferenceNode out of the call's type arguments;
+    //    this skips HTML-element string literals like `'button'` while
+    //    landing on the actual props type.
+    if (init && ts.isCallExpression(init) && init.typeArguments?.length) {
+      const last = lastTypeReference(init.typeArguments);
+      if (last) return last;
+    }
+
+    // 3. Direct callback initializer (no HOC): `const X = (props: Props) => ...`
     if (init && (ts.isArrowFunction(init) || ts.isFunctionExpression(init))) {
       const param = init.parameters[0];
       if (param?.type) return param.type;
     }
+
+    // 4. HOC-call whose first argument IS the arrow component
+    //    (`const X = styled.div(...)((props: Props) => ...)`).
+    if (init && ts.isCallExpression(init) && init.arguments.length) {
+      for (const arg of init.arguments) {
+        if (ts.isArrowFunction(arg) || ts.isFunctionExpression(arg)) {
+          const p0 = arg.parameters[0];
+          if (p0?.type) return p0.type;
+        }
+      }
+    }
   }
   return null;
+}
+
+/* Walk type arguments right-to-left and return the first TypeReferenceNode or
+ * TypeLiteralNode. Skips literal-type args used for HTML-element discriminators
+ * (`forwardComponent<'button', Props>`). */
+function lastTypeReference(args: readonly ts.TypeNode[]): ts.TypeNode | null {
+  for (let i = args.length - 1; i >= 0; i--) {
+    const a = args[i];
+    if (ts.isTypeReferenceNode(a) || ts.isTypeLiteralNode(a) || ts.isIntersectionTypeNode(a)) return a;
+  }
+  return null;
+}
+
+/* Resolve a TypeReferenceNode (e.g. `ButtonProps`, `Props`) to the matching
+ * `interface X {}` or `type X = {...}` declared earlier in the same source
+ * file. Returns the unwrapped TypeNode (a TypeLiteralNode for interfaces, the
+ * aliased type for type-aliases). One-level resolution only; if the alias
+ * points at another TypeReference, the caller may recurse manually.
+ *
+ * Tracks bindings declared by NamedImports separately — for `import { Props
+ * } from "./types"` we don't follow cross-file (yet); operators handle that
+ * via overrides. */
+function dereferenceLocalType(sf: ts.SourceFile, ref: ts.TypeReferenceNode): ts.TypeNode | null {
+  const name = ref.typeName.getText();
+  let found: ts.TypeNode | null = null;
+  ts.forEachChild(sf, (n) => {
+    if (found) return;
+    if (ts.isInterfaceDeclaration(n) && n.name.text === name) {
+      // Include heritage clauses' members would be nice, but TS gives us only
+      // the interface's own member list here. Cross-interface inheritance
+      // (`extends OtherProps`) drops props — operator overrides cover it.
+      found = ts.factory.createTypeLiteralNode(n.members);
+    }
+    if (ts.isTypeAliasDeclaration(n) && n.name.text === name) {
+      found = n.type;
+    }
+  });
+  return found;
 }
 
 function collectMembers(typeNode: ts.TypeNode): readonly ts.TypeElement[] {

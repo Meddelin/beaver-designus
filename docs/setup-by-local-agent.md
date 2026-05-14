@@ -258,7 +258,11 @@ If `typecheck` fails because:
 - **Import path is unresolvable.** The DS's `package.json` `main`/`exports` field doesn't expose the file you're importing. Look at the DS's actual exports and pick the right path. If the only path that works is a deep import (`@beaver-ui/button/dist/Button`), use that; record it as a delta.
 - **Component name mismatch.** The manifest extracted an export name that the package doesn't re-export at the package root. Two causes:
   1. The DS uses aggregator packages that re-export from a different name. Resolve by importing from the canonical sub-package.
-  2. The manifest mis-extracted. Open `packages/manifest/src/scan/discovery.ts` for context, then write a note in the report — but **do not** edit the file.
+  2. The manifest mis-extracted (rare, since the `discoverSymbols` filter rejects hooks/factories/constants/type-only exports). Open `packages/manifest/src/scan/discovery.ts` for context, then write a note in the report — but **do not** edit the file.
+
+**Defensive recovery:** if a per-package import fails and you can't immediately resolve it, **omit that package entirely** rather than blocking the whole bring-up. Drop the corresponding imports + map entries, list the package under "Non-blocking deltas" in the report (`{ package: "@x/foo", reason: "<error>", components_affected: N }`). The preview renders `UnknownComponentFallback` chips for those components, which is non-fatal — the operator (or next-pass agent) fixes them after seeing what's actually wrong.
+
+**Sanity check before committing the file:** the `discoverSymbols` filter (`packages/manifest/src/scan/discovery.ts`) already drops the most common contaminants — `useFoo` hooks, `createBar` factories, `SCREAMING_SNAKE` constants, `*Context` / `*Map` / `*Helpers` / `*Utils` and `export type` re-exports. So your map should contain only PascalCase component identifiers. If something obviously non-component (`useDebounce`, `createPortal`) slipped through, it's a DS-specific naming exception worth recording as a delta — but don't paper over it by hand-editing the map; the operator may want to widen the exclusion heuristic in `discovery.ts`.
 
 ### 1.8 Wire CSS bundles (if applicable)
 

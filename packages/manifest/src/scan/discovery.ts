@@ -93,21 +93,63 @@ function resolveEntryFile(pkgRoot: string, pkgJson: any): string | null {
  * re-exports, and emit one DiscoveredSymbol per exported declaration.
  *
  * Mirrors dscan's prescanBeaver re-export-chain flattening, but scoped to the
- * one package we're inspecting.
+ * one package we're inspecting. Filters non-component exports (hooks /
+ * factories / constants / type-only) so the manifest enum stays clean.
  */
 export function discoverSymbols(pkg: PackageInfo): DiscoveredSymbol[] {
   const seenFiles = new Set<string>();
   const collected: DiscoveredSymbol[] = [];
   walkFile(pkg.entryFile, seenFiles, collected);
   // Dedupe by exportName — re-exports + the target file's direct declaration
-  // yield the same symbol twice. The first hit (from the entry file's
-  // re-export) usually has the right declaration pointer; later hits with the
-  // same name are redundant.
+  // yield the same symbol twice.
   const byName = new Map<string, DiscoveredSymbol>();
   for (const sym of collected) {
     if (!byName.has(sym.exportName)) byName.set(sym.exportName, sym);
   }
-  return [...byName.values()];
+  // Filter to component-looking exports only.
+  const out: DiscoveredSymbol[] = [];
+  for (const sym of byName.values()) {
+    if (!isLikelyComponentName(sym.exportName)) continue;
+    if (declarationIsTypeOnly(sym.declarationFile, sym.exportName)) continue;
+    out.push(sym);
+  }
+  return out;
+}
+
+/** Heuristic: components are PascalCase identifiers. Reject:
+ *  - lowercase-starting names (`useFoo`, `createBar`, `withBaz`) → hooks / factories
+ *  - SCREAMING_SNAKE_CASE → constants
+ *  - names containing `Context` suffix → context objects
+ *  - well-known utility suffixes (`Map`, `Helper`, `Utils`)
+ *  These are conservative — false positives (rejecting a legitimate component
+ *  with an unusual name) are recovered via override files; false negatives
+ *  (letting a non-component through) cause runtime crashes in the preview. */
+export function isLikelyComponentName(name: string): boolean {
+  if (!name) return false;
+  const first = name[0];
+  if (!first || first !== first.toUpperCase()) return false;
+  if (first === first.toLowerCase()) return false; // not a letter (e.g. "$x")
+  if (/^[A-Z0-9_]+$/.test(name)) return false; // SCREAMING_SNAKE
+  if (/(Context|ContextValue|ContextType)$/.test(name)) return false;
+  if (/(Map|Utils|Helpers?)$/.test(name)) return false;
+  return true;
+}
+
+/** Open the declaration file and check whether the export is a type-only
+ *  declaration (`type X = ...` / `interface X {}`). Plain re-exports of
+ *  types from `import type` won't reach here (already filtered upstream),
+ *  but `export type X = ...` inside the destination file does. */
+function declarationIsTypeOnly(file: string, exportName: string): boolean {
+  if (!existsSync(file)) return false;
+  const src = readFileSync(file, "utf8");
+  const sf = ts.createSourceFile(file, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let typeOnly = false;
+  ts.forEachChild(sf, (n) => {
+    if (typeOnly) return;
+    if (ts.isTypeAliasDeclaration(n) && n.name.text === exportName) typeOnly = true;
+    if (ts.isInterfaceDeclaration(n) && n.name.text === exportName) typeOnly = true;
+  });
+  return typeOnly;
 }
 
 function walkFile(file: string, seen: Set<string>, out: DiscoveredSymbol[]): void {
