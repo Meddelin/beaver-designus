@@ -56,9 +56,32 @@ export async function build(): Promise<void> {
     const dsOutDir = join(outDir, ds.id);
     mkdirSync(dsOutDir, { recursive: true });
 
-    // Stage 1
-    const packages = discoverPackages(dsRoot, ds.componentRoot);
+    // Stage 1 — discover packages, honoring excludePackages from config.
+    const packages = discoverPackages(dsRoot, ds.componentRoot, {
+      excludePackages: ds.excludePackages,
+    });
     console.log(`[manifest] [${ds.id}] discovered ${packages.length} packages`);
+
+    // Stage 3 — pre-scan ALL MDX files from configured docsRoot(s) once per
+    // DS so the per-component match below is O(n) instead of O(n²). For
+    // Beaver-style auto-doc layouts the same file applies via ancestor-dir
+    // name; for per-package `<pkg>/docs/<X>.mdx` the filename match wins.
+    const docsRoots: string[] = ds.docsRoot
+      ? Array.isArray(ds.docsRoot)
+        ? ds.docsRoot
+        : [ds.docsRoot]
+      : [];
+    const dsLevelMdxFiles: string[] = [];
+    for (const root of docsRoots) {
+      // If the configured root contains a `*` glob (legacy `packages/*/docs`),
+      // we conservatively treat it as "scan the parent dir recursively" —
+      // the recursion handles per-package layouts without explicit globbing.
+      const cleanRoot = root.replace(/\/\*\/[^*]*$/, "");
+      dsLevelMdxFiles.push(...findAllMdx(resolve(dsRoot, cleanRoot)));
+    }
+    if (dsLevelMdxFiles.length) {
+      console.log(`[manifest] [${ds.id}] indexed ${dsLevelMdxFiles.length} MDX files across ${docsRoots.length} root(s)`);
+    }
 
     // Load overrides for this DS once (per-entry merges by manifest id).
     const dsOverridesDir = join(overridesDir, ds.id);
@@ -71,7 +94,15 @@ export async function build(): Promise<void> {
     let tokenGroupPaths: Set<string> = new Set();
     if (ds.tokenRoot) {
       const tokenRoot = resolve(dsRoot, ds.tokenRoot);
-      const tokensResult = extractTokens(tokenRoot);
+      const tokensResult = extractTokens(tokenRoot, {
+        axisGrammar: ds.tokenAxisGrammar
+          ? {
+              pattern: new RegExp(ds.tokenAxisGrammar.pattern),
+              defaultSurface: ds.tokenAxisGrammar.defaultSurface,
+              defaultTheme: ds.tokenAxisGrammar.defaultTheme,
+            }
+          : undefined,
+      });
       tokenGroupPaths = new Set(Object.keys(tokensResult.manifest.groups));
 
       // tokens.json — overwrite per DS that has one (last DS wins; in practice
@@ -96,9 +127,11 @@ export async function build(): Promise<void> {
 
         const slots = inferSlotPolicy(sym.declarationFile, sym.exportName, extracted.childrenShape);
 
-        // Stage 3 — source priority: MDX → Storybook CSF → JSDoc.
-        const docsDir = join(pkg.root, "docs");
-        const mdxMatch = matchMdxForExport(docsDir, sym.exportName);
+        // Stage 3 — source priority: MDX (per-package OR DS-level) → Storybook CSF → JSDoc.
+        const perPackageDocsDir = join(pkg.root, "docs");
+        const mdxMatch =
+          matchMdxForExport(perPackageDocsDir, sym.exportName) ??
+          matchMdxByAncestor(dsLevelMdxFiles, sym.exportName);
         const sbMatch = mdxMatch ? null : matchStorybookForExport(pkg.root, sym.exportName);
 
         let description: string | null | undefined = mdxMatch?.description ?? sbMatch?.description ?? extracted.description;
@@ -178,6 +211,17 @@ function matchMdxForExport(docsDir: string, exportName: string): ReturnType<type
     const parsed = parseMdx(f);
     if (parsed.title === exportName) return parsed;
     if (basename(f).startsWith(exportName + ".")) return parsed;
+  }
+  return null;
+}
+
+/* Match by ancestor directory name. For Beaver-style layouts like
+ * `auto-doc/docs/patterns/Navigation/SideNavigation/01/01.mdx`, the
+ * component's name lives in a parent dir rather than frontmatter/filename. */
+function matchMdxByAncestor(allFiles: string[], exportName: string): ReturnType<typeof parseMdx> | null {
+  for (const f of allFiles) {
+    const segments = f.replace(/\\/g, "/").split("/");
+    if (segments.includes(exportName)) return parseMdx(f);
   }
   return null;
 }

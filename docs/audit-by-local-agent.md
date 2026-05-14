@@ -169,6 +169,20 @@ Common blocking shapes (so you know what to look for):
 - Beaver tokens come from a third package, not the upstream `react-ui-kit` design-tokens → the `tokenRoot` config supports one DS owning tokens; if two DSes both ship tokens, the config schema needs a `tokenRoot[]` list.
 - Components are authored as `forwardRef<HTMLElement, Props>` chains the prop extractor can't follow → `props/extract.ts` needs to special-case the pattern.
 
+## 5a. Configuration knobs the pipeline already exposes
+
+Some shapes that an earlier audit might have called "blocking" are now covered by config in `manifest.config.json`. If your DS hits one of these, **prefer the config knob over recommending a code change**:
+
+| Audit gap | Pipeline knob | Example |
+|---|---|---|
+| Workspace has non-component infra packages (`analytics`, `hooks`, `core`, `internal-*`, `deprecated/*`) that should be skipped | `excludePackages: string[]` (basename glob, supports `*`) | `"excludePackages": ["analytics", "hooks", "core", "internal-*"]` |
+| Docs are not at `<pkg>/docs/` but at a DS-level path (`auto-doc/docs/patterns/...`) or split across multiple roots | `docsRoot: string \| string[]` — multiple roots, each recursed | `"docsRoot": ["auto-doc/docs/patterns", "docs"]` |
+| Components in deep nested folders where directory name carries the component name (e.g. `<…>/SideNavigation/01/01.mdx`) | Built-in: the matcher also walks ancestor directory names and matches on `exportName` | (no config — automatic) |
+| Token axis-leaf vocabulary differs from the default `desktopvalue`/`desktopdarkvalue`/`mobilevalue`/`mobiledarkvalue` (e.g. PascalCase `desktopValue`/`iosValue` with 3 surfaces) | `tokenAxisGrammar: { pattern, defaultSurface?, defaultTheme? }` — regex with named groups `surface` (required) and `theme` (optional) | `"tokenAxisGrammar": { "pattern": "^(?<surface>desktop\|ios\|android)(?<theme>Dark)?Value$", "defaultSurface": "desktop", "defaultTheme": "light" }` |
+| Component prop has the right type for token-reference but the extractor's TS type inspection can't see it (loose typing, `string`-typed props) | Per-prop override in `manifest-overrides/<ds-id>/<package>.overrides.json`, OR opt-in convention map via `tokenConventionMap` | See `manifest-overrides/<ds>/<package>.overrides.json` shape |
+
+When you find one of these, mark the check `[ok via config]` in the report and quote the exact config block the operator should paste into `manifest.config.json`. Reserve `[gap]` / `❌ Blocking` for things that truly need a code change in `packages/manifest/src/*`.
+
 ## 6. Rules of engagement (terse, for fast reference)
 
 1. **Read-only.** No edits to repo files except the one report you create.

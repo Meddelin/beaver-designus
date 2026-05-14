@@ -27,13 +27,28 @@ export interface DiscoveredPackage extends PackageInfo {
   symbols: DiscoveredSymbol[];
 }
 
-export function discoverPackages(dsRoot: string, componentRoot: string): PackageInfo[] {
+export interface DiscoverOptions {
+  /** Package basename globs to skip. Supports leading/trailing/midline `*`
+   *  via a literal-glob translation (no full minimatch). E.g.
+   *  `["analytics", "hooks", "internal-*", "*-deprecated"]`. */
+  excludePackages?: string[];
+}
+
+export function discoverPackages(
+  dsRoot: string,
+  componentRoot: string,
+  opts: DiscoverOptions = {}
+): PackageInfo[] {
   const pkgRoot = resolve(dsRoot, componentRoot);
   if (!existsSync(pkgRoot)) return [];
+  const excludeREs = (opts.excludePackages ?? []).map(globToRegExp);
   const out: PackageInfo[] = [];
   for (const dir of readdirSync(pkgRoot)) {
     const root = join(pkgRoot, dir);
     if (!statSync(root).isDirectory()) continue;
+    // Auto-skip the design-tokens package — handled by Stage 4b regardless.
+    if (dir === "design-tokens") continue;
+    if (excludeREs.some((re) => re.test(dir))) continue;
     const pjPath = join(root, "package.json");
     if (!existsSync(pjPath)) continue;
     const pj = JSON.parse(readFileSync(pjPath, "utf8"));
@@ -43,6 +58,14 @@ export function discoverPackages(dsRoot: string, componentRoot: string): Package
     out.push({ name: pj.name, root, entryFile: entry });
   }
   return out;
+}
+
+/* Translate a basename glob (`*` wildcard only) into a regex anchored on both
+ * ends. Strings without `*` match exactly. */
+function globToRegExp(glob: string): RegExp {
+  const escaped = glob.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = "^" + escaped.replace(/\*/g, ".*") + "$";
+  return new RegExp(pattern);
 }
 
 function resolveEntryFile(pkgRoot: string, pkgJson: any): string | null {

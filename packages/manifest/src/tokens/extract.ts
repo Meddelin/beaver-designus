@@ -44,9 +44,25 @@ export interface ExtractTokensResult {
   cssByCombo: Record<string, string>;
 }
 
-const AXIS_KEY_RE = /^(?<surface>desktop|mobile)(?<theme>dark)?value$/;
+const DEFAULT_AXIS_KEY_RE = /^(?<surface>desktop|mobile)(?<theme>dark)?value$/;
 
-export function extractTokens(tokenRoot: string, upstreamVersion = "fixture-0.1.0"): ExtractTokensResult {
+export interface AxisGrammar {
+  /** Regex with named groups `surface` (required) and `theme` (optional). */
+  pattern: RegExp;
+  /** Preferred default for picking the default combo. If absent, first
+   *  observed value wins. */
+  defaultSurface?: string;
+  defaultTheme?: string;
+}
+
+export interface ExtractTokensOptions {
+  upstreamVersion?: string;
+  axisGrammar?: AxisGrammar;
+}
+
+export function extractTokens(tokenRoot: string, opts: ExtractTokensOptions = {}): ExtractTokensResult {
+  const upstreamVersion = opts.upstreamVersion ?? "fixture-0.1.0";
+  const grammar: AxisGrammar = opts.axisGrammar ?? { pattern: DEFAULT_AXIS_KEY_RE };
   const namespaceFiles = discoverNamespaces(tokenRoot);
   const groups: Record<string, TokenGroup> = {};
 
@@ -77,8 +93,8 @@ export function extractTokens(tokenRoot: string, upstreamVersion = "fixture-0.1.
     }
   }
 
-  const { axes, combos, defaultComboId } = deriveAxes(groups);
-  const cssByCombo = emitCssForCombos(groups, combos);
+  const { axes, combos, defaultComboId } = deriveAxes(groups, grammar);
+  const cssByCombo = emitCssForCombos(groups, combos, grammar);
 
   return {
     manifest: {
@@ -149,31 +165,40 @@ function loadNamespaceJs(jsFile: string): any {
   return req(jsFile);
 }
 
-function deriveAxes(groups: Record<string, TokenGroup>): { axes: TokenAxis[]; combos: TokenAxisCombo[]; defaultComboId: string } {
-  // Collect every axis-leaf key seen across every variant value. Parse
-  // each with the configured grammar (hard-coded for v1 — §3.2 stage 4b
-  // makes this overridable, but the upstream's vocabulary is fixed).
+function deriveAxes(
+  groups: Record<string, TokenGroup>,
+  grammar: AxisGrammar
+): { axes: TokenAxis[]; combos: TokenAxisCombo[]; defaultComboId: string } {
+  // Collect every axis-leaf key seen across every variant value, parsed with
+  // the configured grammar. `surface` is required; `theme` is optional —
+  // grammars without a theme group (e.g. surface-only) produce a single-axis
+  // combo set.
   const surfaceVals = new Set<string>();
   const themeVals = new Set<string>();
   let sawAxisKey = false;
-  let sawAxisless = false;
+  let grammarUsesTheme = false;
 
   for (const group of Object.values(groups)) {
     for (const v of group.variants) {
       for (const leafKey of Object.keys(v.values)) {
-        const m = AXIS_KEY_RE.exec(leafKey);
-        if (!m) { sawAxisless = true; continue; }
+        const m = grammar.pattern.exec(leafKey);
+        if (!m) continue;
         sawAxisKey = true;
-        const surface = m.groups!.surface;
-        const theme = m.groups!.theme ? "dark" : "light";
+        const surface = m.groups?.surface;
+        if (!surface) continue;
         surfaceVals.add(surface);
-        themeVals.add(theme);
+        const theme = m.groups?.theme;
+        if (theme !== undefined) {
+          grammarUsesTheme = true;
+          // Normalize: any truthy capture in the `theme` group means "dark".
+          // The user's grammar can capture e.g. "Dark" or "dark"; we collapse.
+          themeVals.add(theme ? "dark" : "light");
+        }
       }
     }
   }
 
   if (!sawAxisKey) {
-    // No axes — single default combo, axisless keys map to a single "" key.
     return {
       axes: [],
       combos: [{ id: "default", selections: {} }],
@@ -181,47 +206,78 @@ function deriveAxes(groups: Record<string, TokenGroup>): { axes: TokenAxis[]; co
     };
   }
 
-  const axes: TokenAxis[] = [
-    { id: "surface", values: [...surfaceVals] },
-    { id: "theme", values: themeVals.size ? [...themeVals] : ["light"] },
-  ];
+  // Theme axis: when grammar supports a theme group, every leaf either
+  // captures it (= "dark") or doesn't (= "light"). We always emit both if any
+  // dark key was seen.
+  const themesIfPresent = themeVals.size ? ["light", "dark"] : ["light"];
+
+  const axes: TokenAxis[] = [{ id: "surface", values: [...surfaceVals] }];
+  if (grammarUsesTheme) axes.push({ id: "theme", values: themesIfPresent });
+
   const combos: TokenAxisCombo[] = [];
-  for (const surface of axes[0].values) {
-    for (const theme of axes[1].values) {
-      combos.push({
-        id: `surface=${surface}.theme=${theme}`,
-        selections: { surface, theme },
-      });
+  if (grammarUsesTheme) {
+    for (const surface of axes[0].values) {
+      for (const theme of themesIfPresent) {
+        combos.push({ id: `surface=${surface}.theme=${theme}`, selections: { surface, theme } });
+      }
+    }
+  } else {
+    for (const surface of axes[0].values) {
+      combos.push({ id: `surface=${surface}`, selections: { surface } });
     }
   }
-  const defaultComboId = combos.find((c) => c.selections.surface === "desktop" && c.selections.theme === "light")?.id ?? combos[0].id;
-  // Note: axisless tokens (spacing groups in our fixture) still emit per-combo
-  // CSS files with the same values everywhere — see emitCssForCombos.
+
+  const defaultSurface = grammar.defaultSurface ?? [...surfaceVals][0];
+  const defaultTheme = grammar.defaultTheme ?? "light";
+  const defaultComboId =
+    combos.find(
+      (c) =>
+        c.selections.surface === defaultSurface &&
+        (!grammarUsesTheme || c.selections.theme === defaultTheme)
+    )?.id ?? combos[0].id;
+
   return { axes, combos, defaultComboId };
 }
 
-function resolveValueForCombo(variant: TokenVariant, combo: TokenAxisCombo): string | null {
-  // If the variant has axis-leaf keys, use the combo's selection.
-  const leafKey = combo.selections.surface
-    ? `${combo.selections.surface}${combo.selections.theme === "dark" ? "dark" : ""}value`
-    : "";
-  if (variant.values[leafKey]) return variant.values[leafKey];
-  // Axisless variant (spacing.scale.md = { desktopvalue, mobilevalue }) — still keyed by surface, fall back to desktopvalue.
-  if (variant.values["desktopvalue"]) return variant.values["desktopvalue"];
-  // Pure axisless (no axis keys at all) — single "" key.
-  if (variant.values[""]) return variant.values[""];
-  // Fall back: first value seen.
-  const first = Object.values(variant.values)[0];
-  return first ?? null;
+/* Match a variant's leaf-key entry against a combo by re-running the grammar
+ * against each leaf key. This is grammar-agnostic — we don't try to
+ * reconstruct the leaf key from the combo selection (which would couple us
+ * to the casing/format of the user's pattern). */
+function resolveValueForCombo(
+  variant: TokenVariant,
+  combo: TokenAxisCombo,
+  grammar: AxisGrammar
+): string | null {
+  // Axisless combo: pick the first value of the variant.
+  if (Object.keys(combo.selections).length === 0) {
+    return variant.values[""] ?? Object.values(variant.values)[0] ?? null;
+  }
+  for (const [leafKey, value] of Object.entries(variant.values)) {
+    const m = grammar.pattern.exec(leafKey);
+    if (!m) continue;
+    const surface = m.groups?.surface;
+    if (surface !== combo.selections.surface) continue;
+    if (combo.selections.theme !== undefined) {
+      const theme = m.groups?.theme ? "dark" : "light";
+      if (theme !== combo.selections.theme) continue;
+    }
+    return value;
+  }
+  // Fallback: variant didn't ship this combo's axis-leaf; pick any value.
+  return Object.values(variant.values)[0] ?? null;
 }
 
-function emitCssForCombos(groups: Record<string, TokenGroup>, combos: TokenAxisCombo[]): Record<string, string> {
+function emitCssForCombos(
+  groups: Record<string, TokenGroup>,
+  combos: TokenAxisCombo[],
+  grammar: AxisGrammar
+): Record<string, string> {
   const out: Record<string, string> = {};
   for (const combo of combos) {
     const lines: string[] = [":root {"];
     for (const group of Object.values(groups)) {
       for (const v of group.variants) {
-        const resolved = resolveValueForCombo(v, combo);
+        const resolved = resolveValueForCombo(v, combo, grammar);
         if (resolved != null) lines.push(`  ${v.cssVar}: ${resolved};`);
       }
     }
