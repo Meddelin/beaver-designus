@@ -1,0 +1,199 @@
+// `npm run preview:doctor` — preflight sanity check.
+//
+// Runs the cheap-but-non-trivial validations before `npm run dev` so the
+// operator (and the bring-up agent) catch wiring issues as a structured
+// report rather than a chaotic browser console. Exit code is non-zero on
+// the first failed check.
+
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { resolve, join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
+
+const __dirname = fileURLToPath(new URL(".", import.meta.url));
+const PROJECT_ROOT = resolve(__dirname, "..", "..", "..");
+
+interface Check {
+  id: string;
+  description: string;
+  run(): { ok: true } | { ok: false; reason: string; fix?: string };
+}
+
+const checks: Check[] = [
+  {
+    id: "manifest-built",
+    description: "manifest-data/index.json exists and parses",
+    run() {
+      const p = join(PROJECT_ROOT, "manifest-data", "index.json");
+      if (!existsSync(p)) {
+        return {
+          ok: false,
+          reason: `${p} not found`,
+          fix: "run `npm run manifest:build` first",
+        };
+      }
+      try {
+        const idx = JSON.parse(readFileSync(p, "utf8"));
+        if (!Array.isArray(idx.entries) || idx.entries.length === 0) {
+          return {
+            ok: false,
+            reason: "manifest-data/index.json has no entries",
+            fix: "check manifest.config.json `componentRoot` + `excludePackages`; re-run `npm run manifest:build`",
+          };
+        }
+      } catch (err) {
+        return {
+          ok: false,
+          reason: `manifest-data/index.json invalid JSON: ${(err as Error).message}`,
+          fix: "re-run `npm run manifest:build`",
+        };
+      }
+      return { ok: true };
+    },
+  },
+  {
+    id: "tokens-css",
+    description: "manifest-data/tokens.css exists (placeholder ok)",
+    run() {
+      const p = join(PROJECT_ROOT, "manifest-data", "tokens.css");
+      if (!existsSync(p)) {
+        return {
+          ok: false,
+          reason: `${p} missing`,
+          fix: "re-run `npm run manifest:build` — Stage 4b should write it",
+        };
+      }
+      return { ok: true };
+    },
+  },
+  {
+    id: "component-map-current",
+    description: "component-map.ts up-to-date with manifest-data/index.json",
+    run() {
+      const cm = join(PROJECT_ROOT, "packages", "preview-runtime", "src", "component-map.ts");
+      const idx = join(PROJECT_ROOT, "manifest-data", "index.json");
+      if (!existsSync(cm)) {
+        return {
+          ok: false,
+          reason: "packages/preview-runtime/src/component-map.ts missing",
+          fix: "run `npm run preview:wire`",
+        };
+      }
+      if (existsSync(idx) && statSync(idx).mtimeMs > statSync(cm).mtimeMs) {
+        return {
+          ok: false,
+          reason: "manifest-data/index.json is newer than component-map.ts",
+          fix: "run `npm run preview:wire` to regenerate",
+        };
+      }
+      return { ok: true };
+    },
+  },
+  {
+    id: "ds-paths-exist",
+    description: "every designSystems[].source.localPath in manifest.config.json points at a real directory",
+    run() {
+      const cfgPath = join(PROJECT_ROOT, "manifest.config.json");
+      if (!existsSync(cfgPath)) {
+        return { ok: false, reason: "manifest.config.json missing" };
+      }
+      const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+      for (const ds of cfg.designSystems ?? []) {
+        const lp = ds?.source?.localPath;
+        if (!lp) continue;
+        const abs = resolve(PROJECT_ROOT, lp);
+        if (!existsSync(abs)) {
+          return {
+            ok: false,
+            reason: `DS '${ds.id}' source.localPath ${abs} does not exist`,
+            fix: `place the DS clone (symlink, junction, or git clone) at that path`,
+          };
+        }
+        if (!existsSync(join(abs, "package.json"))) {
+          return {
+            ok: false,
+            reason: `DS '${ds.id}' path ${abs} has no package.json`,
+            fix: `point source.localPath at the DS repo root (containing package.json)`,
+          };
+        }
+      }
+      return { ok: true };
+    },
+  },
+  {
+    id: "ds-deps-installed",
+    description: "each DS has its own node_modules (transitive deps available to Vite)",
+    run() {
+      const cfgPath = join(PROJECT_ROOT, "manifest.config.json");
+      if (!existsSync(cfgPath)) return { ok: true }; // earlier check catches missing config
+      const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+      for (const ds of cfg.designSystems ?? []) {
+        const lp = ds?.source?.localPath;
+        if (!lp) continue;
+        const abs = resolve(PROJECT_ROOT, lp);
+        if (!existsSync(abs)) continue; // earlier check catches missing path
+        if (!existsSync(join(abs, "node_modules"))) {
+          return {
+            ok: false,
+            reason: `DS '${ds.id}' has no node_modules at ${abs}`,
+            fix: "run `npm run setup:ds` — installs DS transitive deps in-place",
+          };
+        }
+      }
+      return { ok: true };
+    },
+  },
+  {
+    id: "typecheck-component-map",
+    description: "tsc --noEmit on the project filters component-map.ts errors",
+    run() {
+      const cm = join(PROJECT_ROOT, "packages", "preview-runtime", "src", "component-map.ts");
+      if (!existsSync(cm)) return { ok: false, reason: "component-map.ts missing", fix: "run `npm run preview:wire`" };
+      // Use the project tsconfig so module resolution, paths, and JSX runtime
+      // settings match real dev-time behaviour. Single-file `tsc <file>`
+      // ignores tsconfig.
+      const r = spawnSync(
+        process.platform === "win32" ? "npx.cmd" : "npx",
+        ["tsc", "--noEmit", "--pretty", "false"],
+        { cwd: PROJECT_ROOT, encoding: "utf8" }
+      );
+      if (r.status !== 0) {
+        const all = (r.stdout ?? "") + "\n" + (r.stderr ?? "");
+        // Surface only errors that point at component-map.ts — other files
+        // are out of this check's scope.
+        const cmErrors = all
+          .split(/\r?\n/)
+          .filter((l) => l.includes("component-map.ts") && l.includes("error"));
+        if (cmErrors.length === 0) {
+          // tsc failed but not on component-map.ts → not our problem; pass.
+          return { ok: true };
+        }
+        return {
+          ok: false,
+          reason: `tsc reported errors in component-map.ts:\n${cmErrors.slice(0, 5).join("\n")}`,
+          fix: "re-run `npm run preview:wire` — generator drops failing packages and writes component-map.report.json",
+        };
+      }
+      return { ok: true };
+    },
+  },
+];
+
+let failures = 0;
+for (const c of checks) {
+  process.stdout.write(`  [check] ${c.id.padEnd(28)} — `);
+  const r = c.run();
+  if (r.ok) {
+    process.stdout.write("ok\n");
+  } else {
+    process.stdout.write(`FAIL\n           reason: ${r.reason}\n`);
+    if (r.fix) process.stdout.write(`           fix:    ${r.fix}\n`);
+    failures++;
+  }
+}
+
+if (failures) {
+  process.stdout.write(`\n[preview:doctor] ${failures} check(s) failed. Apply the fix above and re-run.\n`);
+  process.exit(1);
+}
+process.stdout.write(`\n[preview:doctor] all checks passed — run \`npm run dev\`.\n`);

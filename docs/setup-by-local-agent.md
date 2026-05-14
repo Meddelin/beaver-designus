@@ -1,187 +1,124 @@
 # Setup instruction — for a local AI agent bringing up beaver-designus inside the DS perimeter
 
-> You are the bring-up agent. The operator has handed you (a) this repository, (b) paths to two design system repos, and (c) the corporate Qwen Code fork binary. Your job: perform every step needed to get the app running so the operator only has to open a browser tab.
->
-> You **are** allowed to modify a narrow set of files (listed in §0.2). You are **not** allowed to refactor daemon/manifest internals, change the architecture, alter dependencies, or commit/push anything. You write a single report at `docs/setup-report.md` when done.
+> You are the bring-up agent. The operator has handed you (a) this repository, (b) paths to two design system repos, and (c) the corporate Qwen Code fork binary. **Run the seven commands in §1 in order.** Six of them are deterministic — you neither write code nor make judgement calls. The one step that needs adaptation is §1.6 (Qwen adapter). At the end, write `docs/setup-report.md` and stop.
 
-## 0. Contract
-
-### 0.1 Inputs the operator gives you (mandatory)
-
-1. **Two DS source locations**, each either:
-   - an absolute path on disk (`C:\repos\beaver-ui` or `/home/u/repos/beaver-ui`), OR
-   - a git clone URL with whatever auth (SSH, PAT-in-URL, or a checkout already on disk).
-
-   The operator labels each by id: `beaver`, `react-ui-kit`. If they call them something else, use the operator's id verbatim.
-
-2. **Path to the Qwen Code corporate fork binary**, absolute. Example: `/opt/corp/bin/qwen-corp` or `C:\corp\tools\qwen-tbank.exe`.
-
-3. **(Optional)** any auth env vars / config files the corporate Qwen fork needs to talk to the LLM. The operator names them; you don't invent.
-
-### 0.2 Files you may modify
-
-- `manifest.config.json` — point at the operator's DS paths, set `excludePackages`, `docsRoot`, `tokenAxisGrammar`, `tokenCssVarPattern` per the audit guidance.
-- `packages/preview-runtime/src/component-map.ts` — regenerate from `manifest-data/index.json`.
-- `daemon/runtimes/defs/qwen.ts` — adapt to the corporate fork (binary name, CLI flags, stream format). **This is the only daemon file you may touch.**
-- `web/src/main.tsx` — add DS CSS imports if needed (one or two `import "..."` lines, nothing else).
-- `.cache/` — operator's DS clones go here; you may `mkdir`, `git clone`, or symlink.
-- `manifest-overrides/<ds-id>/*.overrides.json` — only if you genuinely had to override something to make a component render. Author one override per *real* problem; don't pre-populate.
-
-You may also write `docs/setup-report.md` at the end.
-
-### 0.3 Files you must NOT modify
-
-- `ARCHITECTURE.md`, `IMPROVEMENT_PLAN.md`, `README.md`, `docs/audit-by-local-agent.md`.
-- Anything under `daemon/` except `daemon/runtimes/defs/qwen.ts`.
-- Anything under `packages/manifest/src/` (pipeline source).
-- `shared/`, `web/src/` (except the one allowed `main.tsx` line if needed).
-- `tests/`, `package.json`, `tsconfig.json`, `eslint.config.js`, `.prettierrc.json`, `vitest.config.ts`, `playwright.config.ts`.
-
-If you think one of these needs a code change, **stop and write that into `docs/setup-report.md` as a "blocked-on" item** instead of editing. The operator routes it to the next agent.
-
-### 0.4 No commits, no pushes
-
-You do not `git add`, `git commit`, `git push`, `git checkout`, `git stash`. The operator handles git. You just leave the working tree in a state that, if committed, would be a clean setup PR.
+This playbook was iterated against three prior bring-up attempts that all failed at different points. The fix in each case was to convert a "agent writes code here" step into a checked-in script that does the same thing deterministically. **Do not write a component-map generator. Do not modify `vite.config.ts`. Do not write a doctor. They already exist.**
 
 ---
 
-## 1. Step-by-step procedure
+## 0. Contract
 
-Run these in order. After each step, verify the exit-criterion before moving to the next. If a step fails, stop and write the failure into the report.
+### 0.1 Inputs the operator gives you
 
-### 1.1 Environment sanity
+1. **Two DS source locations**, each either an absolute path on disk or a git URL. Operator names them with ids (`beaver`, `react-ui-kit`).
+2. **Absolute path to the corporate Qwen Code fork binary**.
+3. **(Optional)** auth env vars / config the corporate Qwen fork needs.
 
-```bash
-node --version       # → 20.x or later
-npm --version        # → 10.x or later
-git --version        # → 2.4x or later
-```
+### 0.2 Files you may modify
 
-If any is missing → blocked; write `Required tooling missing: <list>` and stop.
+The list is now tiny:
 
-### 1.2 Install dependencies
+- `manifest.config.json` — pick the right `componentRoot` / `excludePackages` / `docsRoot` / `tokenAxisGrammar` for the DSes the operator handed you. If they're the audited T-Bank Beaver + react-ui-kit, you skip this and `cp manifest.config.tbank.example.json manifest.config.json`.
+- `daemon/runtimes/defs/qwen.ts` — adapt to the corporate fork (§1.6). Three worked examples ship inline.
+- `.cache/` — DS clones / symlinks live here.
 
-```bash
-npm install
-```
+### 0.3 Files you must NOT modify
 
-Expected: ~30 sec, no errors. `node_modules/` populates.
+- `web/vite.config.ts` — auto-reads `manifest.config.json` and exposes DS paths to Vite's `server.fs.allow` + dedupes React. If something doesn't resolve, the fix is in `manifest.config.json`, not here.
+- `packages/preview-runtime/src/component-map.ts` — auto-generated by `npm run preview:wire`. Never hand-edit.
+- `packages/preview-runtime/src/doctor.ts`, `packages/preview-runtime/src/generate-component-map.ts`, `scripts/install-ds.mjs` — these are the bring-up tooling; they don't need patches.
+- `packages/manifest/src/**`, `daemon/**` (except `runtimes/defs/qwen.ts`), `shared/**`, `web/src/**`, `tests/**`, `package.json`, `tsconfig.json`.
 
-If the operator's npm registry is behind a corporate proxy and the install fails: stop, write the exact error, ask the operator to run `npm config set registry <corp-mirror>` and retry. **Do not** edit `.npmrc` or `package.json`.
+If a check fails and you think the fix is to edit a forbidden file, **stop and write that into `docs/setup-report.md` as a "blocked-on" item**.
 
-### 1.3 Place DS repos
+### 0.4 No commits, no pushes
 
-For each DS the operator named (`beaver`, `react-ui-kit`):
+You don't `git add/commit/push/checkout/stash`. Final state of the worktree is what the operator commits themselves.
+
+---
+
+## 1. The seven commands
+
+Run them in order. Each prints a clear pass/fail.
+
+### 1.1 `npm install`
+
+Installs the project's deps. If it fails on a private `@platform-ui/*` or `@tui-react/*` registry resolution, the corporate npm registry isn't configured — stop, ask the operator for an `.npmrc` to drop in. **Don't** edit `.npmrc` or `package.json` yourself.
+
+### 1.2 Place DS clones at `.cache/<id>`
+
+The default `manifest.config.json` (and the T-Bank example) expects DSes at `./.cache/beaver-ui` and `./.cache/react-ui-kit`. Use whichever the operator gave you:
 
 ```bash
 mkdir -p .cache
-# If operator gave a path:
-ln -s <abs-path-to-ds> .cache/<ds-id>     # POSIX
-# Windows PowerShell:
+
+# absolute path → symlink (POSIX)
+ln -s <abs-path-to-ds> .cache/<ds-id>
+
+# absolute path → junction (Windows PowerShell)
 New-Item -ItemType Junction -Path .cache\<ds-id> -Target <abs-path-to-ds>
 
-# Or if operator gave a git URL:
+# git URL
 git clone <url> .cache/<ds-id>
 ```
 
 Verify:
 ```bash
-ls .cache/beaver/package.json .cache/react-ui-kit/package.json
+ls .cache/beaver-ui/package.json .cache/react-ui-kit/package.json
 ```
 
-Both must exist.
+If the operator's DSes have ids other than `beaver-ui` / `react-ui-kit`, you'll adjust `manifest.config.json` in §1.3 below — but keep the directory naming consistent with whatever you put in the config.
 
-### 1.4 Configure manifest.config.json
+### 1.3 Pick a `manifest.config.json`
 
-Start from the existing file. Update each DS's `source.localPath` to `./.cache/<ds-id>`.
-
-Run the **audit playbook** at `docs/audit-by-local-agent.md` mentally as you fill the config. Specifically: every check listed in §5a of that document maps to one or two fields here. Common config patterns:
-
-#### 1.4.0 Shortcut: T-Bank Beaver + react-ui-kit
-
-If the operator confirms the DSes are **T-Bank Beaver `v0.244.x`** and **react-ui-kit `release-2026.05-Neodymium`** (or compatible later builds), skip §1.4.1–§1.4.4 and copy the audit-derived config directly:
+**Shortcut for T-Bank Beaver v0.244+ and react-ui-kit Neodymium:**
 
 ```bash
 cp manifest.config.tbank.example.json manifest.config.json
 ```
 
-That file pins `excludePackages`, `componentRoot`, `docsRoot`, and `tokenAxisGrammar` to the values the audit at `docs/audit-report.md` validated against the real repos. Still walk §1.4.5 to confirm the JSON parses on this Node version.
+This pre-fills `componentRoot`, `excludePackages` for both DSes, `docsRoot` arrays, and the PascalCase 3-surface `tokenAxisGrammar` matching the audited reality.
 
-If the operator's DS version differs materially (different componentRoot, different token namespaces, different layout), the example is no longer authoritative — do §1.4.1–§1.4.4 from scratch.
+**Otherwise** — adapt the existing `manifest.config.json` from the audit playbook's §1.4 in `docs/audit-by-local-agent.md`. The fields you fill:
 
-#### 1.4.1 Internal packages (`excludePackages`)
+| Field | What to put |
+|---|---|
+| `source.localPath` | `./.cache/<your-ds-id>` |
+| `componentRoot` | Where packages live. Common values: `packages`, `packages/components`. |
+| `excludePackages` | Basename globs of non-UI packages (`analytics`, `hooks`, `core`, `internal-*`). |
+| `docsRoot` | One path or array of paths to MDX roots, recursed. |
+| `tokenRoot` | Path to design-tokens package (only one DS usually). |
+| `tokenAxisGrammar.pattern` | Regex with named groups `surface` (required) + `theme` (optional). Match the DS's actual leaf-key vocabulary. |
+| `tokenCssVarPattern` | Template `--{namespace}-{binding}-{variant}` — override only if the DS's runtime expects a different name. |
 
-`ls .cache/<ds>/packages` and identify everything that is **not** a UI component package (analytics, hooks, core, deprecated, internal-*, test-helpers, etc.). Add each basename to `excludePackages` with `*`-globs where useful. Auto-skipped already: `design-tokens`.
-
-Example:
-```json
-"excludePackages": ["analytics", "context", "hooks", "core", "internal-*", "deprecated"]
-```
-
-#### 1.4.2 Docs paths (`docsRoot`)
-
-Look for MDX in this order:
-- `.cache/<ds>/auto-doc/docs/` — Docusaurus-style flat or nested docs.
-- `.cache/<ds>/docs/` — root-level docs.
-- `.cache/<ds>/packages/*/docs/` — per-package docs (no glob support; pass `packages` instead and let the recursion find them).
-- `.cache/<ds>/packages/*/__stories__/*.mdx` — Storybook-adjacent tutorial MDX (same: pass `packages` to recurse).
-
-Pick the smallest set of parent dirs that covers all relevant MDX. Multiple roots are fine:
-```json
-"docsRoot": ["auto-doc/docs/patterns", "docs"]
-```
-
-If MDX uses ancestor-directory naming (e.g. `auto-doc/docs/patterns/Navigation/SideNavigation/01/01.mdx`), no further config — the matcher walks ancestor dirs automatically.
-
-#### 1.4.3 Token axis grammar (`tokenAxisGrammar`)
-
-`cat .cache/<react-ui-kit>/packages/design-tokens/animation.d.ts` (or whichever namespace file exists). Look at the leaf-key vocabulary inside variants:
-- If you see `desktopvalue`/`mobilevalue` (lowercase, no theme keys) → no config needed, default works.
-- If you see `desktopValue`/`desktopDarkValue` (PascalCase, with theme) → configure the grammar.
-- If you see 3+ surfaces (`desktop`/`ios`/`android` etc.) → list them all.
-
-Example for `desktopValue` / `desktopDarkValue` / `iosValue` / `iosDarkValue` / `androidValue` / `androidDarkValue`:
-```json
-"tokenAxisGrammar": {
-  "pattern": "^(?<surface>desktop|ios|android)(?<theme>Dark)?Value$",
-  "defaultSurface": "desktop",
-  "defaultTheme": "light"
-}
-```
-
-The regex MUST have named group `surface`. Named group `theme` is optional. The matcher normalizes any captured `theme` to literal `"dark"`; the absence of capture means `"light"`.
-
-#### 1.4.4 CSS variable naming (`tokenCssVarPattern`)
-
-Default emitter writes `--<namespace>-<binding>-<variant>` (e.g. `--animation-curve-expressive-standard`). If your DS's runtime CSS reads variables with a different convention, override the template. Placeholders: `{namespace}`, `{binding}`, `{variant}`.
-
-To find out which convention the DS uses, grep one of the DS's compiled CSS files (or `.module.css`):
-```bash
-grep -h "var(--" .cache/<ds>/packages/*/dist/*.css | head -5
-```
-
-Common shapes the agent may encounter:
-- `--<namespace>-<binding>-<variant>` (our default) — set nothing.
-- `--<prefix>-<namespace>-<binding>-<variant>` — set `"--tui-{namespace}-{binding}-{variant}"` (or whatever prefix).
-- `--<namespace>_<binding>_<variant>` (underscore) — set `"--{namespace}_{binding}_{variant}"`.
-
-If the DS uses a wildly different scheme (camelCase, runtime-computed names), don't try to fit it — just write the deviation into the setup-report's "non-blocking deltas" section and move on. The preview will fall back to default colors for affected props, which is non-fatal.
-
-#### 1.4.5 Sanity-check the config
+Then:
 
 ```bash
 node -e "JSON.parse(require('fs').readFileSync('manifest.config.json'))"
 ```
 
-If that fails, your JSON is malformed.
+If that fails, fix the JSON.
 
-### 1.5 Build the manifest
+### 1.4 `npm run setup:ds`
 
-```bash
-npm run manifest:build
-```
+Walks `manifest.config.json` `designSystems[*].source.localPath` and runs `npm install --ignore-scripts --legacy-peer-deps --no-audit --no-fund` inside each DS clone. This populates `.cache/<ds>/node_modules` so Vite can resolve the DS's own transitive deps (react, classnames, date-fns, the rest).
 
-Expected output:
+Why `--ignore-scripts`: DS repos often have husky `prepare` or postinstall scripts that assume a dev shell. They're noise for our purposes.
+
+Why `--legacy-peer-deps`: DS peer-dep constraints are sometimes loose; npm 7+'s strict resolver rejects compatible majors.
+
+If a DS fails to install, the script prints the exit code and stops. **Don't try to npm-install around the failure** — surface it in the report. Most common cause: the corporate registry isn't reachable from that DS root, OR the DS has an `npm-shrinkwrap.json` with locked-down versions. Either way, the operator decides what to do.
+
+### 1.5 `npm run manifest:build`
+
+Discovers packages, extracts prop signatures (including HOC patterns like `forwardComponent<E, Props>(cb)` and `createButton<Props>(hook)`), parses MDX + Storybook stories, extracts design tokens. Outputs:
+
+- `manifest-data/index.json` — flat list of all components
+- `manifest-data/<ds>/<package>.json` — per-package files
+- `manifest-data/tokens.json` + `tokens.css` — Stage 4b output
+
+Expected log lines:
+
 ```
 [manifest] [beaver] discovered N packages
 [manifest] [beaver] indexed K MDX files across M root(s)
@@ -190,160 +127,42 @@ Expected output:
 [manifest] wrote <total> entries to .../manifest-data
 ```
 
-Verify:
-- `manifest-data/index.json` exists and `entries` has > 0 items.
-- `manifest-data/tokens.json` has > 0 `groups`.
-- `manifest-data/tokens.css` is non-empty.
+If `discovered 0 packages` for a DS that should have components, your `componentRoot` is wrong (e.g. react-ui-kit's actually at `packages/components`, not `packages`). Edit `manifest.config.json` and re-run.
 
-If the build exits non-zero, **stop and write the stderr into the report**. Don't blindly retry with different config — the audit playbook describes which knobs to tune.
+If everything looks fine but a manifest entry seems suspicious (a hook, a constant, a type alias), **don't worry** — the `discoverSymbols` filter rejects them at scan time. Only PascalCase value exports survive.
 
-### 1.6 Scaffold overrides (optional, recommended)
+### 1.6 Adapt `daemon/runtimes/defs/qwen.ts` to the corporate fork
 
-```bash
-npm run manifest:scaffold-overrides
-```
+This is the only step where you THINK. The corporate Qwen fork almost certainly differs from upstream. Three worked examples shipped in the file's neighbourhood; reproduce one of them.
 
-This writes empty `manifest-overrides/<ds>/<package>.overrides.json` skeletons for components with sparse descriptions or `kind: "unsupported"` props. **It does not overwrite existing override files.** You leave the skeletons for the operator to fill in (or the next agent pass). Don't author overrides yourself unless one is required to make a specific component render at all (§1.7 will surface that case).
-
-### 1.7 Regenerate `component-map.ts`
-
-This is the only piece of code generation you actually do. Read `manifest-data/index.json` and produce a TypeScript file at `packages/preview-runtime/src/component-map.ts` that:
-
-1. One `import` line per *package* (NOT per entry — multiple exports from the same package collapse into one import).
-2. `COMPONENT_MAP` is a Record keyed by `ManifestEntry.id`, valued by the imported component reference.
-
-Algorithm:
-
-```ts
-import { readFileSync, writeFileSync } from "node:fs";
-
-const idx = JSON.parse(readFileSync("manifest-data/index.json", "utf8"));
-
-// Group exports by package
-const byPkg = new Map<string, Array<{ exportName: string; id: string }>>();
-for (const e of idx.entries) {
-  if (!byPkg.has(e.packageName)) byPkg.set(e.packageName, []);
-  byPkg.get(e.packageName)!.push({ exportName: e.exportName, id: e.id });
-}
-
-const importLines = [...byPkg.entries()].map(
-  ([pkg, exports]) => `import { ${exports.map(e => e.exportName).join(", ")} } from "${pkg}";`
-);
-const mapLines = idx.entries.map(
-  (e: any) => `  ${JSON.stringify(e.id)}: ${e.exportName},`
-);
-
-const out = `// AUTO-GENERATED — do not hand-edit.
-//
-// Regenerate with the procedure in docs/setup-by-local-agent.md §1.7
-// (run after every \`npm run manifest:build\`).
-
-import * as React from "react";
-${importLines.join("\n")}
-
-export const COMPONENT_MAP: Record<string, React.ComponentType<any>> = {
-${mapLines.join("\n")}
-};
-`;
-
-writeFileSync("packages/preview-runtime/src/component-map.ts", out);
-```
-
-After writing the file, verify TypeScript still compiles:
-```bash
-npm run typecheck
-```
-
-If `typecheck` fails because:
-- **Import path is unresolvable.** The DS's `package.json` `main`/`exports` field doesn't expose the file you're importing. Look at the DS's actual exports and pick the right path. If the only path that works is a deep import (`@beaver-ui/button/dist/Button`), use that; record it as a delta.
-- **Component name mismatch.** The manifest extracted an export name that the package doesn't re-export at the package root. Two causes:
-  1. The DS uses aggregator packages that re-export from a different name. Resolve by importing from the canonical sub-package.
-  2. The manifest mis-extracted (rare, since the `discoverSymbols` filter rejects hooks/factories/constants/type-only exports). Open `packages/manifest/src/scan/discovery.ts` for context, then write a note in the report — but **do not** edit the file.
-
-**Defensive recovery:** if a per-package import fails and you can't immediately resolve it, **omit that package entirely** rather than blocking the whole bring-up. Drop the corresponding imports + map entries, list the package under "Non-blocking deltas" in the report (`{ package: "@x/foo", reason: "<error>", components_affected: N }`). The preview renders `UnknownComponentFallback` chips for those components, which is non-fatal — the operator (or next-pass agent) fixes them after seeing what's actually wrong.
-
-**Sanity check before committing the file:** the `discoverSymbols` filter (`packages/manifest/src/scan/discovery.ts`) already drops the most common contaminants — `useFoo` hooks, `createBar` factories, `SCREAMING_SNAKE` constants, `*Context` / `*Map` / `*Helpers` / `*Utils` and `export type` re-exports. So your map should contain only PascalCase component identifiers. If something obviously non-component (`useDebounce`, `createPortal`) slipped through, it's a DS-specific naming exception worth recording as a delta — but don't paper over it by hand-editing the map; the operator may want to widen the exclusion heuristic in `discovery.ts`.
-
-### 1.8 Wire CSS bundles (if applicable)
-
-If the DS ships compiled CSS that the preview needs to load, add the imports to `web/src/main.tsx` near the top, **before** the existing `import "./index.css"` line:
-
-```tsx
-import "<package-name>/dist/styles.css";   // or wherever the DS puts it
-```
-
-Find which packages ship CSS:
-```bash
-ls .cache/<ds>/packages/*/dist/*.css 2>/dev/null
-```
-
-If the DS uses CSS Modules (`.module.css`) compiled at component-build-time, you typically **don't** need explicit imports — the component's own `import classes from './x.module.css'` resolves through Vite's CSS Modules support automatically. Verify by opening the rendered preview and checking if styles apply.
-
-If the DS uses CSS-in-JS (styled-components, emotion) and needs a `<ThemeProvider>` wrapping the app, **stop and write that into the report**. Wrapping the App is out of your scope; the next agent pass adds the provider.
-
-### 1.9 Adapt the Qwen Code runtime adapter
-
-This is the longest step. The corporate Qwen fork almost certainly differs from the upstream `qwen` CLI. Walk through these adjustments to `daemon/runtimes/defs/qwen.ts`:
-
-#### 1.9.1 Find the binary
-
-The fork's binary path. Ask the operator if they didn't give it up front. Confirm:
+**Step 1: Locate the binary.**
 
 ```bash
 <operator-path-to-qwen> --version
 ```
 
-Two ways to wire it:
-1. **Path on PATH**: if the binary is on PATH and is the only `qwen`-ish thing there, leave `bin: "qwen.exe"` / `"qwen"` and the daemon's `where`/`which` resolver picks it up.
-2. **Explicit env var override**: set `QWEN_BIN=/abs/path/to/qwen-corp` in the env (write this into the report so the operator knows). The adapter reads `binEnvVar: "QWEN_BIN"` and prefers it over PATH lookup.
-3. **Hardcode the bin name** if the fork's binary is named differently (e.g. `qwen-corp.exe`): change `bin:` in the def. Renaming `binEnvVar` is not necessary — `QWEN_BIN` works for any qwen-flavored binary.
+If it doesn't run, ask the operator for the right path.
 
-#### 1.9.2 Check `--version` behavior
+**Step 2: Inspect the argv shape.**
 
 ```bash
-<qwen-corp> --version
-```
-
-If the fork doesn't support `--version` (or has a different flag like `-v` / `version`), update `versionArgs` in the def:
-```ts
-versionArgs: ["-v"],
-// or
-versionArgs: ["version"],
-```
-
-The daemon needs *some* probe that exits 0 quickly and prints anything. If absolutely nothing works, fall back to `versionArgs: ["--help"]` — it'll print help and exit 0, the daemon takes the first stdout line as the version string.
-
-#### 1.9.3 Inspect the fork's argv shape
-
-```bash
-<qwen-corp> --help | head -40
+<operator-path-to-qwen> --help | head -60
 ```
 
 Look for:
-- **Prompt input mode**: does it accept the user prompt on stdin (`-` argument) or as a positional `--prompt <text>` / `<text>` arg?
-- **MCP config flag**: does it support `--mcp-config <path>`? If named differently (`--mcp`, `--config`, `--tool-config`), update `buildArgs`.
-- **Stream output**: does it support `--stream`, `--output-format jsonl`, anything similar? If yes, you may switch `streamFormat: "claude-stream-json"` if the format matches.
-- **Headless / auto-approve mode**: upstream Qwen has `--yolo` which auto-approves tools. Look for `--yolo`, `--auto-approve`, `--no-confirm`, `--non-interactive`. If none, the CLI will hang on first tool prompt; **stop and report**.
-- **Quiet/no-color**: useful but optional.
+- **Prompt input**: stdin (`-`) vs `--prompt <text>` vs positional.
+- **MCP flag**: `--mcp-config <path>` vs `--mcp <path>` vs `--tool-config <path>`.
+- **Auto-approve**: `--yolo` vs `--auto-approve` vs `--no-confirm`. If none exists, the CLI will hang on every tool call — stop and report.
+- **Stream output**: `--stream`, `--output-format jsonl`. If JSONL, you may switch `streamFormat: "claude-stream-json"` IF the event shape matches Claude Code's. If unsure, keep `streamFormat: "plain"`.
 
-#### 1.9.4 Three example adaptations
+**Step 3: Write the adapter.**
 
-**Example A — fork is identical to upstream Qwen:**
-```ts
-export const qwenAgentDef: RuntimeAgentDef = {
-  id: "qwen",
-  displayName: "Qwen Code (corp)",
-  bin: process.platform === "win32" ? "qwen.exe" : "qwen",
-  binEnvVar: "QWEN_BIN",
-  versionArgs: ["--version"],
-  streamFormat: "plain",
-  promptViaStdin: true,
-  buildArgs: ({ mcpConfigPath }) => ["--yolo", "--mcp-config", mcpConfigPath, "-"],
-};
-```
-(no edits beyond what ships)
+Open `daemon/runtimes/defs/qwen.ts`. Three example adaptations:
+
+**Example A — fork is identical to upstream Qwen.** No edits.
 
 **Example B — fork renames `--yolo` to `--auto-approve` and uses `--mcp` instead of `--mcp-config`:**
+
 ```ts
 export const qwenAgentDef: RuntimeAgentDef = {
   id: "qwen",
@@ -358,6 +177,7 @@ export const qwenAgentDef: RuntimeAgentDef = {
 ```
 
 **Example C — fork emits JSON Lines and wants the system prompt as a file:**
+
 ```ts
 export const qwenAgentDef: RuntimeAgentDef = {
   id: "qwen",
@@ -365,7 +185,7 @@ export const qwenAgentDef: RuntimeAgentDef = {
   bin: process.platform === "win32" ? "qwen-corp.exe" : "qwen-corp",
   binEnvVar: "QWEN_BIN",
   versionArgs: ["--version"],
-  streamFormat: "claude-stream-json",   // if compatible; otherwise still "plain"
+  streamFormat: "claude-stream-json",
   promptViaStdin: true,
   buildArgs: ({ mcpConfigPath, systemPromptFile }) => [
     "--auto-approve",
@@ -377,150 +197,148 @@ export const qwenAgentDef: RuntimeAgentDef = {
 };
 ```
 
-If you go with Example C and `streamFormat: "claude-stream-json"`, **verify the JSON shape matches Claude Code's** by reading `daemon/stream-format/claude-stream-json.ts`. If the fork's JSONL events have different keys (`type`, `content`, etc.) than Claude Code's, you cannot reuse the handler — keep `streamFormat: "plain"` and accept that tool-call events arrive only via the daemon's MCP-server channel, not the CLI stdout.
+If Example C: check `daemon/stream-format/claude-stream-json.ts` to confirm event shape. If the fork's JSONL events use different keys, fall back to `"plain"`.
 
-#### 1.9.5 Auth + corporate environment
+**Step 4: Set auth env vars.**
 
-Most likely the corporate fork talks to a private LLM gateway with one of:
-- An env var like `QWEN_API_KEY` or `CORP_LLM_TOKEN`.
-- A config file in `~/.config/qwen-corp/config.json`.
-- A bearer token in a header configured via flags.
+If the fork talks to a private LLM gateway and needs `QWEN_API_KEY` / `CORP_LLM_TOKEN` / similar, instruct the operator in the setup-report to set them in their shell *before* `npm run dev`. The daemon forwards `process.env` (minus `CLAUDE_CODE_USE_POWERSHELL_TOOL`) to the spawned CLI.
 
-Don't put credentials in `daemon/runtimes/defs/qwen.ts` or anywhere in the repo. Instead, instruct the operator in the setup-report to set the env vars in their shell before running `npm run dev`. The daemon's spawn already forwards `process.env` to the child (`agent-loop.ts` line ~107), so anything in the operator's shell env reaches Qwen.
-
-Note: `daemon/agent-loop.ts` explicitly **strips** one var (`CLAUDE_CODE_USE_POWERSHELL_TOOL`) from the child env to keep the agent-spawned Claude predictable. If the operator says the Qwen fork is sensitive to *any* env var leaking from the host, list it in your report and ask whether to add it to the strip-list. Don't add it yourself — that's a daemon-code change outside your scope.
-
-#### 1.9.6 Probe the adapter works
-
-After saving the new `qwen.ts`:
+**Step 5: Verify detection.**
 
 ```bash
-# verify the daemon picks it up
-node -e "import('./daemon/runtimes/detection.ts').then(m => console.log(m.detectAvailableAgents()))"
+node --import tsx -e "import('./daemon/runtimes/detection.ts').then(m => console.log(m.detectAvailableAgents()))"
 ```
 
-(That import may require `--import tsx` — adapt if needed. If you can't run TS modules directly, skip this probe and check at dev-server start in §1.10.)
+Expect a non-empty array with at least `{ def: { id: 'qwen' }, binPath: '<abs>', version: '<v>' }`. If empty, your binary path or `versionArgs` is wrong.
 
-Expected: at least one entry with `def.id === "qwen"` and a non-null `binPath`.
+### 1.7 `npm run preview:wire`
 
-If the probe returns `[]` or no qwen entry, your binary path/flag adjustments are wrong; retry from §1.9.2.
+Reads `manifest-data/index.json`, generates `packages/preview-runtime/src/component-map.ts` with **always-aliased** imports (`import { LabelDesktop as TuiReactCheckbox__LabelDesktop } from "@tui-react/checkbox"`) so cross-package name collisions never compile-break. Validates by running `tsc --noEmit` and, if any imports fail, drops those packages and retries once. Writes `component-map.report.json` next to it listing any drops.
 
-### 1.10 Start the dev server
+**Do not regenerate this file by hand.** The generator is the source of truth.
+
+Expected output:
+
+```
+[preview:wire] wrote N entries across M package(s); dropped K; warnings: 0
+```
+
+If `dropped > 0`, open `packages/preview-runtime/src/component-map.report.json` and copy each `dropped[].packageName` + `reason` into the setup-report's "Non-blocking deltas" section. Those components will render as `UnknownComponentFallback` chips — non-fatal.
+
+### 1.8 `npm run preview:doctor`
+
+Preflight sanity check. Runs six validations:
+
+| Check | What it verifies | Fix on failure |
+|---|---|---|
+| `manifest-built` | `manifest-data/index.json` exists with entries | run §1.5 again with correct config |
+| `tokens-css` | `manifest-data/tokens.css` exists | run §1.5 again |
+| `component-map-current` | `component-map.ts` newer than `index.json` | run §1.7 again |
+| `ds-paths-exist` | every `source.localPath` directory exists | run §1.2 again |
+| `ds-deps-installed` | every DS has `node_modules` | run §1.4 again |
+| `typecheck-component-map` | `tsc --noEmit` is clean for `component-map.ts` | re-run `npm run preview:wire` |
+
+Each failure prints the concrete fix. Apply it, re-run `npm run preview:doctor`, repeat. When all six checks pass, you're done with the setup — go to §1.9.
+
+### 1.9 `npm run dev`
+
+Daemon on `127.0.0.1:7457`, vite on `127.0.0.1:5173` (or first free port above).
+
+Confirm:
 
 ```bash
-npm run dev
+curl -s -o /dev/null -w "vite=%{http_code} daemon=%{http_code}\n" http://127.0.0.1:5173/ http://127.0.0.1:7457/api/health
 ```
 
-Wait until you see in the output:
-- `[web] ➜  Local: http://127.0.0.1:5173/` (or 5174/5175 if 5173 is busy)
-- `[daemon] daemon listening at http://127.0.0.1:7457 · log file <home>/.beaver-designus/daemon.log`
+Both should be 200.
 
-Health check:
-```bash
-curl -s -o /dev/null -w "vite=%{http_code} daemon=%{http_code}\n" http://127.0.0.1:5173/
-curl -s http://127.0.0.1:7457/api/health
-```
-
-Both should return 200 / `{"ok":true,...}`.
-
-### 1.11 Smoke test the agent loop
-
-Create a session and send a one-line message:
+Now run the smoke test:
 
 ```bash
 SESSION=$(curl -s -X POST http://127.0.0.1:7457/api/sessions -H 'content-type: application/json' -d '{}' | python -c "import sys,json; print(json.load(sys.stdin)['sessionId'])")
 
 curl -s -X POST http://127.0.0.1:7457/api/sessions/$SESSION/message \
   -H 'content-type: application/json' \
-  -d '{"content":"Place a single PageShell as the root and stop."}'
-```
+  -d '{"content":"Place a single PageShell as the root and finish."}'
 
-In another shell, watch the SSE stream:
-```bash
+# In another shell:
 curl -N http://127.0.0.1:7457/api/sessions/$SESSION/events
 ```
 
-You should see, in order:
-1. `data: {"type":"prototype:set-root","revision":0,"root":null}` (initial hydrate)
-2. `data: {"type":"status","phase":"start","data":{"runtime":"qwen",...}}`
-3. One or more `data: {"type":"status","phase":"tool-call","data":{"name":"mcp__beaver_designus__placeComponent",...}}` events.
-4. `data: {"type":"prototype:set-root","revision":1,"root":{"component":"<ds>:<...>/PageShell",...}}`
-5. `data: {"type":"status","phase":"end","data":{"code":0}}`
+Expected SSE event sequence (rough):
+1. `prototype:set-root revision=0 root=null`
+2. `status start runtime=qwen ...`
+3. one or more `status tool-call name=mcp__beaver_designus__placeComponent`
+4. `prototype:set-root revision=1 root=<PageShell node>`
+5. `status end code=0`
 
-If you don't see any tool-call events within 30 seconds, the CLI either hung waiting for confirmation (your `buildArgs` is missing `--yolo` / equivalent), or it's failing to talk to its LLM (auth env vars missing, network blocked). Stop and write the failure into the report.
+If no tool-call event arrives within 30 seconds:
+- Most likely the Qwen fork is hanging on tool-confirm. Re-check §1.6 Step 3 — the `--yolo` / `--auto-approve` equivalent is missing.
+- Second-most likely: auth env vars aren't set in the shell that started the daemon. Stop `npm run dev`, set them, restart.
 
-### 1.12 Write `docs/setup-report.md`
-
-Required sections:
+### 1.10 Write `docs/setup-report.md`
 
 ```markdown
 # Setup report — <date>
 
 ## Verdict
-One of:
-- ✅ Ready — operator can open http://127.0.0.1:5173 and use the app.
-- ⚠️ Partial — server starts and the UI renders, but specific components fall back to UnknownComponentFallback / a turn fails. List which.
-- ❌ Blocked — see "Required next steps".
+- ✅ Ready — open http://127.0.0.1:5173
+- ⚠️ Partial — server runs, but specific components fall back to UnknownComponentFallback. List which.
+- ❌ Blocked — see Required next steps.
 
 ## Open this URL
 http://127.0.0.1:5173/
 
-## Config applied
-- DS paths: …
-- excludePackages: …
-- docsRoot: …
-- tokenAxisGrammar: …
-- tokenCssVarPattern: …
-
-## Manifest stats
-- N entries (split by DS)
-- M MDX docs found
-- T token groups
-- K override skeletons scaffolded
+## Commands run
+1. npm install
+2. (DS placement: <how the operator did it>)
+3. (manifest.config.json: copied tbank.example | hand-tuned with these fields …)
+4. npm run setup:ds
+5. npm run manifest:build → N entries, K MDX, T token groups
+6. (qwen.ts adapted: <which example was the base + what diff>)
+7. npm run preview:wire → X entries, Y dropped packages
+8. npm run preview:doctor → all 6 ok
+9. npm run dev + smoke test → SSE events captured: <yes / no>
 
 ## Qwen adapter
 - Binary: <path>
-- Binary version: <output of --version>
-- Flags resolved: <full argv the daemon will spawn>
+- Version: <output of versionArgs>
+- Args resolved: <full argv>
 - Stream format: plain | claude-stream-json
-- Env vars the operator must set before `npm run dev`:
-  - `QWEN_BIN=<path>` (only if not on PATH)
-  - `<auth env vars>`
-
-## Smoke-test result
-What happened when you sent the test prompt. SSE events captured.
-
-## Required next steps (only if Verdict ≠ ✅)
-- <thing the operator (or next agent) must do that I couldn't>
+- Env vars the operator must set: <list>
 
 ## Non-blocking deltas
-- <minor mismatches that work-around-ed>
+- <dropped packages from preview-wire>
+- <any other minor caveats>
+
+## Required next steps (only if ⚠️ or ❌)
+- <specific concrete next action; if you needed to edit a forbidden file, name it here for the next agent>
 ```
 
-Stop after writing the report. Don't restart the server. Don't commit.
+Stop after writing the report. Don't restart anything.
 
 ---
 
-## 2. Failure modes the agent will likely hit
+## 2. Failure recipes
 
-These are paths the agent should recognize and handle, not panic over.
-
-| Symptom | Likely cause | Action |
+| Symptom | Cause | Action |
 |---|---|---|
-| `npm install` fails on a `@platform-ui/*` private package | Corporate registry not configured | Stop, ask operator for `.npmrc` to drop in |
-| `npm run manifest:build` outputs `discovered 0 packages` | `componentRoot` wrong, or all packages got excluded | Check `manifest.config.json`; common: react-ui-kit has components at `packages/components` not `packages` |
-| `manifest:build` fails inside Stage 4b with `Cannot find module './<ns>'` | The `.js` runtime file doesn't exist next to the `.d.ts` | The DS ships .d.ts-only tokens; report as code-change-needed, can't fix in config |
-| `npm run typecheck` after regenerating `component-map.ts` fails with `Cannot find module '@<ds>/...'` | Package isn't installed | The DS is a workspace package; run `npm install <ds-path>` or use file-protocol. Report which packages need installation |
-| Preview renders but every node is an `UnknownComponentFallback` chip | `component-map.ts` keys don't match `manifest-data/index.json` ids | Regenerate `component-map.ts` from scratch using the canonical ids from `index.json` |
-| Smoke test never shows a tool-call event | CLI confirm-prompt is blocking, or auth missing | Add `--yolo`-equivalent flag, or ensure auth env vars |
-| Smoke test times out and stderr has `EACCES` / `socket hang up` to a corporate URL | Network/firewall | Out of agent scope, report to operator |
+| `npm install` fails on private `@platform-ui/*` | corporate registry not configured | ask operator for `.npmrc` |
+| `npm run setup:ds` fails inside a DS clone | DS has a strict shrinkwrap or its own postinstall hook fires despite `--ignore-scripts` | report to operator; **don't** retry with looser flags |
+| `manifest:build` discovers 0 packages | `componentRoot` wrong | adjust `manifest.config.json` and rerun |
+| `manifest:build` errors out in Stage 4b | DS tokens use unexpected shape | check `tokenAxisGrammar.pattern` matches actual leaf-key vocabulary |
+| Vite browser console: "Loading module ... blocked because of disallowed MIME type" | DS path not in `server.fs.allow` | confirm `source.localPath` in `manifest.config.json` resolves to an existing dir; `vite.config.ts` auto-reads it. If still broken, ds path may be outside any allow root — escalate. |
+| `preview:wire` drops half the packages | manifest has names the DS doesn't actually export from package root | each drop is a real DS-side packaging issue; list them all in the report |
+| `preview:doctor` `typecheck-component-map` fails | something in component-map.ts doesn't compile under the project tsconfig | re-run `npm run preview:wire` — generator runs the same check internally and drops offenders |
+| Smoke test times out without tool-call event | qwen.ts missing `--yolo` equivalent OR auth env var missing | re-check §1.6 |
+| Tree renders but every node is `UnknownComponentFallback` | component-map keys don't match manifest ids | shouldn't happen with the new generator, since they both come from `index.json`. If it does, the generator wrote a placeholder — check `component-map.report.json` warnings |
 
 ## 3. Rules of engagement (terse)
 
-1. **Modify only the 4 files listed in §0.2.** No exceptions.
-2. **No commits, no pushes, no git mutations.**
-3. **No secrets in the repo.** Auth env vars belong in the operator's shell, never in the def file or a checked-in script.
-4. **No dependency churn.** Don't run `npm install <pkg>` to fix an issue — report it.
-5. **Single output file.** `docs/setup-report.md`. Optional: override skeletons under `manifest-overrides/` if `npm run manifest:scaffold-overrides` produced them.
-6. **Stop when blocked.** If a step's exit-criterion isn't met after 2 reasonable attempts, write what you tried and stop. The operator chooses whether to escalate.
-7. **Stop when done.** When verdict is ✅, write the report and exit. Don't keep the dev server running attached to your process — the operator restarts it themselves.
+1. **Use the npm scripts.** `npm run setup:ds`, `npm run manifest:build`, `npm run preview:wire`, `npm run preview:doctor`, `npm run dev`. Don't replicate them.
+2. **Three modifiable files**: `manifest.config.json`, `daemon/runtimes/defs/qwen.ts`, and `.cache/` symlinks. That's it.
+3. **No commits, no pushes, no git mutations.**
+4. **No secrets in the repo.** Auth env vars belong in the operator's shell.
+5. **No dependency churn.** Don't `npm install <pkg>` to "fix" something — report it.
+6. **Stop on first persistent failure.** Two reasonable retries; then write the failure into the report and stop.
+7. **Single output.** `docs/setup-report.md`. (Plus `component-map.report.json` is auto-written by `preview:wire` — that's allowed.)

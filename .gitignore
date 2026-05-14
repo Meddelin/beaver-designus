@@ -29,3 +29,4 @@ playwright-report
 .DS_Store
 Thumbs.db
 *.tmp
+packages/preview-runtime/src/component-map.report.json
