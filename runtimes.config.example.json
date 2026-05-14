@@ -1,0 +1,29 @@
+{
+  "$comment": "Copy this file to runtimes.config.json and uncomment/edit the block matching your corporate Qwen Code (or Claude Code) fork. See docs/setup-by-local-agent.md §1.6 for the three worked examples and the inspection procedure. Unknown ${placeholders} pass through unchanged so typos surface; supported placeholders are listed in daemon/runtimes/runtimes-config-schema.ts.",
+  "runtimes": {
+    "qwen": {
+      "$comment-A": "EXAMPLE A — fork is identical to upstream Qwen. Don't add a runtimes.qwen block at all; delete this file.",
+      "$comment-B": "EXAMPLE B — fork renames --yolo to --auto-approve, --mcp-config to --mcp:",
+      "displayName": "Qwen Code (corp)",
+      "bin": "qwen-corp.exe",
+      "buildArgs": [
+        "--auto-approve",
+        "--mcp", "${mcpConfigPath}",
+        "-"
+      ]
+    },
+    "_$comment-C": "EXAMPLE C — fork emits JSON Lines and wants the system prompt as a file. Replace the qwen block above with this shape:",
+    "_example-c-template": {
+      "displayName": "Qwen Code (corp)",
+      "bin": "qwen-corp.exe",
+      "streamFormat": "claude-stream-json",
+      "buildArgs": [
+        "--auto-approve",
+        "--mcp-config", "${mcpConfigPath}",
+        "--system-prompt-file", "${systemPromptFile}",
+        "--stream-format", "jsonl",
+        "-"
+      ]
+    }
+  }
+}

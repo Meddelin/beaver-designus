@@ -1,194 +1,201 @@
-# Audit instruction — for a local AI agent inside the DS perimeter
+# Audit playbook — read this end-to-end before touching anything
 
-> **You are a read-only audit agent.** Your only job is to compare two real design system repos against the assumptions baked into this project's manifest pipeline, and write **one** markdown report with your findings. You do not modify any source file, you do not run `npm run manifest:build`, you do not push code. If you discover a mismatch, you describe it; you do not fix it.
-
-This document is the entire brief. It is self-contained — there is no other place to look for what "the assumptions" are. Every assumption that matters is enumerated below in `§ Checklist`.
+> You are the audit agent for **beaver-designus** inside a corporate DS perimeter. Your job is to read this repository's manifest-pipeline assumptions, read the operator's two real DS repos, and produce one markdown report that says **whether the pipeline will scan them cleanly** or **which configuration knobs need adjusting**. **You write exactly one file: `docs/audit-report.md`. You touch nothing else.**
 
 ---
 
-## 0. Inputs you have
+## TL;DR — the five absolute rules
 
-1. **This repository** — the beaver-designus source tree. You can read any file here. Authoritative starting points:
-   - `ARCHITECTURE.md` — the long-form spec, especially §3 (manifest schema) and §3.2 (the five-stage extraction pipeline).
-   - `manifest.config.json` — the contract the pipeline reads.
-   - `packages/manifest/src/` — the actual scanner code. Walk it; the comments name every assumption it bakes in.
-   - `shared/types.ts` — `PropEntry` / `SlotPolicy` / `ManifestEntry` shapes.
-2. **Two DS repos** the operator hands you (the actual Beaver + react-ui-kit, or whatever the company calls them). You read these, you don't write to them either.
+1. **READ-ONLY.** Every file in this repository AND in the DS repos is read-only to you. You do not edit, append, rename, delete, chmod, or git-add anything except the one report.
 
-## 1. Output you produce
+2. **NO code.** You don't open a `.ts`, `.tsx`, `.js`, `.mjs`, or `.cjs` file in a write-mode editor. You read them to understand the pipeline; that is the whole purpose. You do not edit them, even if you find a bug. Bugs go in the report — see "Found a real bug?" below.
 
-**Exactly one file:** `docs/audit-report.md`, in this repository. Nothing else. No code edits, no commits, no new scripts, no manifest builds, no library installs.
+3. **NO scripts.** You don't `npm install`, don't `npm run manifest:build`, don't `npm run preview:wire`, don't start the dev server. The whole point of this pass is to **predict** what would happen, not to make it happen. The setup-by-local-agent.md playbook is for the bring-up pass; this is the recon pass that comes before.
 
-Structure (you can extend, but these sections are required):
+4. **NO git mutations.** No `git add`, no `git commit`, no `git checkout`, no `git stash`, no branch creation. The worktree must be byte-identical to what you received except for the new `docs/audit-report.md`.
+
+5. **One output file.** `docs/audit-report.md`. Nothing else. No `tests/`, no `scripts/`, no supplementary docs, no patches. If you find yourself creating a second file, stop and re-read this rule.
+
+---
+
+## §0 — what the operator gives you
+
+1. **This repository** at HEAD — read freely.
+2. **Two DS repos** the operator hands you (absolute paths). Read freely.
+
+That's it. No CLI binaries needed, no LLM auth, no network — just file reads.
+
+---
+
+## §1 — what "good" output looks like
+
+A clean audit produces `docs/audit-report.md` with **§Verdict = ✅** and most checklist items `[ok]`. The maintainer reads it once and confirms the bring-up pass will succeed without code changes.
+
+A blocking audit produces the same file with **§Verdict = ❌** and 1–3 entries under "Required code changes" — each entry names a specific file under `packages/manifest/src/` and describes (in prose, not patch) the smallest viable fix. **You don't write the patch.** The maintainer ships the fix upstream; the next pass re-runs from a fresh `git pull`.
+
+A partial audit produces **§Verdict = ⚠️** and uses the configuration knobs in §3 below to declare "no code change needed; operator passes this config block".
+
+---
+
+## §2 — output template
+
+Copy this into `docs/audit-report.md` and fill in. Don't add headings, don't remove sections — the maintainer parses by structure.
 
 ```markdown
-# DS audit report — <date>
+# DS audit report — <YYYY-MM-DD>
 
 ## Verdict
 One of:
 - ✅ Clean — pipeline will scan both DSes without manual fixes.
-- ⚠️ Workarounds needed — pipeline will scan but some entries will land with placeholder data; one paragraph why and which.
+- ⚠️ Workarounds via config — pipeline will scan, but operator passes a specific manifest.config.json block. Block included below.
 - ❌ Blocking gaps — pipeline cannot extract a coherent manifest until one or more code changes ship.
 
 ## DSes scanned
-| id | path | commit/version | top-level layout |
+| id | path | commit / version | top-level layout |
 | --- | --- | --- | --- |
 | beaver | <abs path> | <git describe / package.json version> | <`packages/*` ? something else?> |
 | react-ui-kit | <abs path> | <…> | <…> |
 
 ## Checklist findings
-One bullet per check from §3 below. Format:
-- **<check-id>** — `[ok]` / `[partial]` / `[gap]` — one-line evidence (path + line number where possible).
+One bullet per check in §3 below. Format:
+- **<check-id>** — `[ok]` / `[ok via config]` / `[partial]` / `[gap]` — one-line evidence with file path and line where possible.
 
-## Required code changes
-Only items that block extraction. Each:
-- Where (file path)
-- What the current code expects
-- What the DS actually looks like
-- Smallest viable fix (one-line description, not a patch)
-
-## Nice-to-have
-Items that won't block but would improve coverage (richer docs, more examples, etc.).
-
-## Raw notes
-Anything else worth noting — unusual TS patterns, internal-only packages to skip, license oddities.
+## Configuration block to apply
+If verdict is ⚠️, paste here the EXACT `manifest.config.json` content the operator should use. No prose around it — just the JSON. Maintainer copy-pastes verbatim.
+```json
+{ ... }
 ```
 
-Stop after writing this file. **Do not invoke the manifest build.** Do not run tests. Do not edit any code.
+## Required code changes
+Only if verdict is ❌. Each entry:
+- Where (file path)
+- What the current code expects (cite the relevant function / line)
+- What the DS actually looks like (cite the DS file / line)
+- Smallest viable fix (one paragraph, prose, NOT a patch)
 
-## 2. Working procedure
+Empty if verdict is ✅ or ⚠️.
 
-1. **Read `ARCHITECTURE.md` §3 and §3.2 end to end.** This is the contract — your audit is per-assumption against this contract.
-2. **Read the source of every file under `packages/manifest/src/`.** The comments at the top of each file describe what's assumed. Cross-reference with §3.2 stages 1–5 + 4b.
-3. **Walk both DS repos top-down.** Use the checklist below as your traversal plan.
-4. **Write `docs/audit-report.md` and exit.**
+## Nice-to-have
+Items that don't block but would improve coverage. One bullet each.
 
-You may run any read-only command: `ls`, `cat`, `grep`, `git log`, `git status`, package-manager show commands. You may **not** run anything that installs packages, builds the manifest, opens the daemon, modifies a file, or pushes anywhere.
+## Raw notes
+Anything else worth recording — unusual patterns, deprecated packages to skip, license oddities, internal scopes.
 
-## 3. Checklist
+## Spot-check summary
+- Components inspected: <names + paths>
+- Stories inspected: <paths>
+- Docs inspected: <paths>
+- Tokens inspected: <namespace files>
+```
 
-Each item names a specific pipeline assumption. For each, find evidence (a file path, a regex hit, a missing thing) and mark `[ok]` / `[partial]` / `[gap]`. The check id is what you write in the report bullet.
+---
 
-### A. Repository layout (Stage 1 — discovery)
+## §3 — the checklist (read every check; emit a bullet for each)
 
-- **A1** — DS root is a monorepo with components under `<componentRoot>/<package>/package.json`. `manifest.config.json` defaults `componentRoot` to `packages` for both DSes. Verify: does the DS use `packages/<name>/package.json`? `pnpm-workspace.yaml`? `lerna.json`? Reference: `packages/manifest/src/scan/discovery.ts`.
-- **A2** — Each component package has an entry point (`package.json` `main`/`module`/`exports`). The scanner uses this to find the canonical declaration file. Verify: open 3–5 packages and confirm `main` or `exports` resolves to a TS file under `src/`.
-- **A3** — Re-export chains. The scanner follows `export { X } from "./..."` and `export * from "./..."` recursively. Verify: pick a package that re-exports across files; confirm the chain terminates at the actual definition.
-- **A4** — Single canonical declaration per symbol. The scanner dedupes by `exportName`. Verify: are there packages that export the same name twice (e.g. via two different paths)? If yes, the manifest will collapse them to one — note which one wins.
-- **A5** — Are there packages you should explicitly **exclude** from scanning? Internal-only utility packages, test helpers, deprecated. List them. The pipeline currently scans everything except packages whose name contains `design-tokens` (handled by Stage 4b). If the DS has other internal packages, the agent's selector context will be polluted unless they're filtered.
+### A. Repository layout (Stage 1 — discovery, `packages/manifest/src/scan/discovery.ts`)
 
-### B. Prop extraction (Stage 2)
+- **A1** — DS root is a monorepo with components under `<componentRoot>/<package>/package.json`. Common values: `packages` (Beaver-style), `packages/components` (react-ui-kit-style). What does THIS DS use?
+- **A2** — Each component package has an entry point (`package.json` `main`/`module`/`exports`). Spot-check 3–5 packages — does each resolve to a TS file under `src/`?
+- **A3** — Re-export chains terminate. Pick a package that re-exports across files (`index.ts → ./button → ./button-desktop.tsx`); confirm the chain ends at the actual definition. `export * from "./..."` is supported by the pipeline as of 2026-05-14 fix.
+- **A4** — Aggregator packages. Some DSes re-export from `@scope/components/<x>` AND from `@scope/<x>`. The pipeline dedupes by exportName; the first hit wins. Note if any DS has this pattern.
+- **A5** — Internal-only packages to exclude. List every directory under `<componentRoot>/` that is **not** a UI component (analytics, hooks, core, deprecated, internal-*, etc.). These become `excludePackages` in `manifest.config.json`.
 
-- **B1** — Prop types are extractable via TypeScript compiler API walking the component file. The scanner is in `packages/manifest/src/props/extract.ts`. It looks for either:
-  - a typed first parameter (`(props: Props) => ...` or `(props: { variant: 'a' | 'b' }) => ...`), OR
-  - a typed `React.FC<Props>` / `React.FunctionComponent<Props>`,
-  - or a hooked-up `forwardRef<Ref, Props>`.
-  
-  Verify: pick 3 components of each shape and confirm the type is *statically* reachable. Note: if your DS uses HOCs (`withSomething(Component)`) or generic factories, the type chain breaks — `kind: "unsupported"` lands on every prop.
+### B. Prop extraction (Stage 2, `packages/manifest/src/props/extract.ts`)
+
+Note: as of 2026-05-14 the extractor recognises `forwardComponent<E, Props>(cb)`, `createX<Props>(hook)`, `forwardRef<R, P>(cb)`, `React.FC<Props>` variable-annotation, and dereferences local `interface XProps` / `type XProps`. If your DS uses one of these, expect `[ok]`. If something else, expect `[gap]`.
+
+- **B1** — Component shape. forwardRef chain? createButton factory? Plain function? Document one example each.
 - **B2** — Supported kind expressions:
-  - keyword types `string`, `number`, `boolean` → primitive kinds.
-  - literal types `"primary" | "secondary"` → `literal-union`.
-  - `React.ReactNode` (or `ReactNode` imported) → `react-node` (drives slot inference).
-  - `keyof typeof <ns>['<key>']` where `<ns>` is a re-exported namespace from `design-tokens` → `token-reference`. **The reconciler is in `tokens/extract.ts`**; the prop extractor flags candidates and the build orchestrator confirms group existence.
-  - Function types → `callback`.
-  - Anything else → `unsupported` (omitted from tool-use validation, kept visible in explainer).
+  - `string` / `number` / `boolean` keywords
+  - `"a" | "b" | "c"` literal unions
+  - `React.ReactNode`
+  - `keyof typeof <ns>.<member>` → token-reference (requires the dot)
+  - `keyof typeof BareIdent` → `unsupported` (operator overrides)
+  - function types → `callback`
+  - everything else → `unsupported`
   
-  Verify: scan 10 random components, classify what *fraction* of their props fall into "unsupported". A high rate (>30 %) means a lot of agent-invisible surface — note in the report.
-- **B3** — JSDoc on the type / member is used as fallback `description` when MDX/Storybook is missing. Verify: do components ship with JSDoc? If yes, descriptions will at least be non-empty even without MDX.
-- **B4** — Required vs optional is read from TS `?:` marker. Verify a couple. (Almost always works; mention only if something weird like `Partial<…>` wrappers exist.)
-- **B5** — Default values. The extractor reads default values from `function Foo({ tone = "neutral" })` destructure patterns and from JSDoc `@default`. Verify: pick 2 components with defaults and confirm the extracted `defaultValue` would match.
+  Spot-check 10 random components, classify what fraction of their props fall into "unsupported". A high rate (>30%) is informational — note in the report.
+- **B3** — JSDoc on prop members. Coverage is fallback for descriptions when MDX is absent.
+- **B4** — Required vs optional via `?` marker.
+- **B5** — Default values from `function Foo({ x = "a" })` destructure patterns and `@default` JSDoc.
 
 ### C. Slot policy (Stage 4)
 
-- **C1** — `children: ReactNode` → `{kind: "components"}`. Verify a couple.
-- **C2** — `children: string` → `{kind: "text-only"}`. Verify; this is unusual but real (e.g. `<Heading>` typically wants string children only). Confirm whether the DS has this pattern.
-- **C3** — Absent `children` → `{kind: "none"}`. Verify with an atom that doesn't allow children (e.g. `<Input>`).
-- **C4** — Named-slot detection. The inferencer flags props whose **type** is `ReactNode` (and whose **name** is not `children`) as named slots (`navigation`, `subheader`, `actions`, etc.). Verify: does your DS use this pattern? Or does it expect children-as-functions, render-props, JSX-children-with-displayName matching, or something else? If "something else", the manifest will record those slots as plain `react-node` props and the agent won't know they're addressable as slots.
+- **C1** — `children: ReactNode` → `{kind: "components"}`.
+- **C2** — `children: string` → `{kind: "text-only"}` (rare; note if present).
+- **C3** — No children prop → `{kind: "none"}`.
+- **C4** — Named slots: any prop typed `ReactNode` whose name isn't `children` becomes a named slot. Does the DS use this pattern? If it uses render props (`renderHeader={(args) => <X/>}`) or `children-as-function`, those won't be inferred and need override files.
 
 ### D. Docs source (Stage 3)
 
-- **D1** — MDX docs. The pipeline expects Docusaurus-shape MDX at `<pkg>/docs/*.mdx` (the `docsRoot` config field is a glob). Frontmatter `title` (or first H1) matches the component `exportName`. Code fences with `tsx`/`jsx`/`ts`/`js` lang become `examples`.
-  
-  Verify: where does your DS actually keep docs? Is it Docusaurus, Storybook, Markdown-only, MDX with custom plugins, no docs? Per how many components have MDX vs not.
-- **D2** — Storybook fallback. The pipeline parses `<pkg>/src/**/*.stories.{ts,tsx}` via TS compiler API if MDX missed. Reads default-export `meta.title` / `meta.argTypes[*].description`. Reads named-export bodies as code examples.
-  
-  Verify: does your DS ship `*.stories.tsx`? CSF v3 (`Meta<typeof X>` + `StoryObj<typeof X>`) is what's parseable; older CSF v1/v2 will fall through.
-- **D3** — JSDoc on the component declaration is the cheapest fallback. Note coverage.
-- **D4** — Override path. `manifest-overrides/<ds-id>/<package>.overrides.json` files merge into the extracted entries. Top-level fields replace; `props` array is name-merged (so an override can patch a single prop's `kind` or `description`). Verify: does any non-trivial subset of the DS need overrides to look right? This is acceptable; just list them so the operator can author the overrides.
+- **D1** — MDX. Where does the DS keep MDX? Per-package `<pkg>/docs/`? DS-level `auto-doc/docs/patterns/<Category>/<Component>/.../*.mdx`? Both? Multiple roots are supported via `docsRoot: string[]`. Ancestor-directory name matching is supported (a file at `auto-doc/docs/patterns/Navigation/SideNavigation/01/01.mdx` matches `exportName=SideNavigation`).
+- **D2** — Storybook CSF. Parsed as fallback when MDX is absent. Looks for `*.stories.{ts,tsx}`, reads default-export `meta.argTypes[*].description`, captures named-export bodies as code examples.
+- **D3** — JSDoc on the component declaration. Cheapest fallback.
+- **D4** — Override files. None ship by default; `npm run manifest:scaffold-overrides` will emit blank skeletons for components with sparse descriptions or unsupported props. **Don't author overrides yourself in this audit pass** — note in the report which components would need them, that's it.
 
-### E. Tokens (Stage 4b, runs once per DS that sets `tokenRoot`)
+### E. Tokens (Stage 4b, `packages/manifest/src/tokens/extract.ts`)
 
-This is the most schema-specific stage. The pipeline assumes:
+- **E1** — Single design-tokens package per DS, configured via `tokenRoot`.
+- **E2** — Paired `<namespace>.d.ts` + `<namespace>.js` files with `export namespace <ns> { export { <binding> }; }` shape.
+- **E3** — Leaf-key vocabulary. Default grammar matches `^(?<surface>desktop|mobile)(?<theme>dark)?value$` (lowercase). Real DSes often use PascalCase 3-surface (`desktopValue`/`iosDarkValue`/`androidValue`). Configure via `tokenAxisGrammar.pattern` in `manifest.config.json` — quote the exact pattern the operator should paste.
+- **E4** — Cross-DS token reference. How do Beaver components reference react-ui-kit tokens? Direct TS imports of the namespace? Local aliases? String-typed and reconciled at runtime? Type-erased cases need overrides — name them.
+- **E5** — CSS variable naming. Default emitter writes `--<namespace>-<binding>-<variant>`. If DS runtime expects a different convention, configure `tokenCssVarPattern`.
 
-- **E1** — A single package (configured as `tokenRoot`, e.g. `packages/design-tokens`) is the canonical token source.
-- **E2** — Each token namespace ships as **paired files**: `<namespace>.d.ts` + `<namespace>.js`. The `.d.ts` declares a TS `namespace` re-exporting one or more bindings (e.g. `export namespace animation { export { curve }; }`). The `.js` exposes the same objects at runtime.
-  
-  Verify: does your real `design-tokens` package follow this layout? Or does it ship single-file ESM, CSS variables, JSON-only, or something else? If "something else", **the entire Stage 4b pipeline does not run** and the operator must either restructure the package or write a custom extractor variant.
-- **E3** — Variant axis vocabulary. Leaf values in `.js` are objects keyed by axis-leaf names — the architecture pinned the grammar at `(desktop|mobile)(dark)?value`. The grammar is configurable via `manifest.config.json` but defaults to that exact regex.
-  
-  Verify: what axis-leaf vocabulary does your real DS use? Same `desktopvalue` / `desktopdarkvalue` / `mobilevalue` / `mobiledarkvalue`? Or `light` / `dark` only? Or device-shaped? Mismatch → grammar must be customized.
-- **E4** — Cross-DS token reconciliation. Beaver components reference `react-ui-kit`'s tokens via `keyof typeof animation['curve']`-style expressions. The extractor handles this via TS type inspection (priority 1) → manual override (priority 2) → convention map (priority 3, opt-in). 
-  
-  Verify: how do Beaver props actually reference react-ui-kit tokens? Direct TS imports of the namespace? Local aliases? String-typed props with runtime validation? Type-erased to `string`? If type-erased, the reconciler gets nothing useful and overrides become mandatory.
-- **E5** — CSS variable naming convention. The synthesizer writes `--<namespace>-<binding>-<variant>` per token (e.g. `--animation-curve-expressive-standard`). Beaver's runtime is assumed to read those names. Verify the convention matches — or that Beaver's own runtime CSS variables are named the same way. If different, the preview will render with default-browser values for affected props.
+### F. Component map (post-`manifest:build`)
 
-### F. Component map regeneration (post-manifest, ahead of preview)
-
-- **F1** — Each package in the DS exports its public components from `package.json`'s `main`/`module`/`exports`. The hand-authored `component-map.ts` does `import { X } from "<package>";` after Vite resolves it. Verify that every DS package's public surface is importable from its package name (not a deep import that requires a specific build step). If a component lives at a deep path the manifest builder happily records the id, but `component-map.ts` may not be able to import it cleanly.
+- **F1** — Every package's public surface is importable from its package name (not a deep build-only path). If a component lives at a path like `@beaver-ui/button/dist/Button` and that's the ONLY way to import it, note it in the report — the auto-generated `component-map.ts` will need to skip that package.
 
 ### G. Browser run-readiness
 
-- **G1** — Does the DS ship CSS the consumer needs to import? (e.g. `import "@react-ui-kit/styles/index.css"`). If yes, list which packages — `web/src/main.tsx` will need an `import` for each.
-- **G2** — Any peer-dependency assumptions? React 18 specifically? styled-components? emotion? If the DS uses CSS-in-JS that requires a provider at the root, the preview must mount that provider. Note it.
+- **G1** — DS-shipped CSS. List CSS bundles each DS requires (e.g. `import "@react-ui-kit/styles"`). The bring-up agent adds these to `web/src/main.tsx`. If components use `.module.css` (handled by Vite's CSS-modules), no global import is needed.
+- **G2** — React provider requirements. If the DS needs a root `<ThemeProvider>` / `<DesignSystemProvider>`, note it. The bring-up agent will need to add it (and the maintainer has to expand the playbook to cover it — flag in the report).
 
-### H. Performance / scale sanity
+### H. Scale
 
-- **H1** — Estimate: total number of exported components across both DSes. If it's >200, the MCP `inputSchema.enum` for `component` will be large; agent CLI tool-use validators handle large enums but the selector context will need tag-based filtering to stay readable.
-- **H2** — Largest single package by component count. If >50 in one package, the per-package JSON file can get big — fine, but noteworthy.
+- **H1** — Total components across both DSes. >200 entries means the MCP enum is large but still well within tool-use limits.
+- **H2** — Largest package by component count.
 
-## 4. What "good" looks like
+---
 
-A clean audit produces `docs/audit-report.md` with:
+## §4 — configuration knobs (prefer over code changes)
 
-- Verdict `✅` and most checklist items `[ok]`.
-- A short paragraph naming which 3–5 components were spot-checked at each stage so the operator can reproduce.
-- Optional `[partial]` flags for things that work but with caveats (e.g. JSDoc coverage low → descriptions sparse).
-- An empty "Required code changes" section.
+The pipeline already exposes config for most "real DS doesn't match assumptions" cases. **If your finding maps to one of these, mark `[ok via config]` and quote the JSON block.** Reserve `[gap]` / `❌ Blocking` for shapes that truly need a code change.
 
-## 5. What "bad" looks like
-
-A blocking audit produces the same file but with:
-
-- Verdict `❌`.
-- 1–3 entries under "Required code changes", each ≤10 lines, naming the exact file in `packages/manifest/src/` to extend and the smallest-viable change. (You don't write the patch; you describe it.)
-
-Common blocking shapes (so you know what to look for):
-
-- DS uses `lerna.json` + non-`packages/` layout → `discovery.ts` needs a new resolver.
-- Tokens ship as CSS-only with no TS types → Stage 4b needs an alternative extractor (read CSS variables directly).
-- Beaver tokens come from a third package, not the upstream `react-ui-kit` design-tokens → the `tokenRoot` config supports one DS owning tokens; if two DSes both ship tokens, the config schema needs a `tokenRoot[]` list.
-- Components are authored as `forwardRef<HTMLElement, Props>` chains the prop extractor can't follow → `props/extract.ts` needs to special-case the pattern.
-
-## 5a. Configuration knobs the pipeline already exposes
-
-Some shapes that an earlier audit might have called "blocking" are now covered by config in `manifest.config.json`. If your DS hits one of these, **prefer the config knob over recommending a code change**:
-
-| Audit gap | Pipeline knob | Example |
+| If you find… | Mark `[ok via config]`, quote: | In `manifest.config.json` `designSystems[*]` |
 |---|---|---|
-| Workspace has non-component infra packages (`analytics`, `hooks`, `core`, `internal-*`, `deprecated/*`) that should be skipped | `excludePackages: string[]` (basename glob, supports `*`) | `"excludePackages": ["analytics", "hooks", "core", "internal-*"]` |
-| Docs are not at `<pkg>/docs/` but at a DS-level path (`auto-doc/docs/patterns/...`) or split across multiple roots | `docsRoot: string \| string[]` — multiple roots, each recursed | `"docsRoot": ["auto-doc/docs/patterns", "docs"]` |
-| Components in deep nested folders where directory name carries the component name (e.g. `<…>/SideNavigation/01/01.mdx`) | Built-in: the matcher also walks ancestor directory names and matches on `exportName` | (no config — automatic) |
-| Token axis-leaf vocabulary differs from the default `desktopvalue`/`desktopdarkvalue`/`mobilevalue`/`mobiledarkvalue` (e.g. PascalCase `desktopValue`/`iosValue` with 3 surfaces) | `tokenAxisGrammar: { pattern, defaultSurface?, defaultTheme? }` — regex with named groups `surface` (required) and `theme` (optional) | `"tokenAxisGrammar": { "pattern": "^(?<surface>desktop\|ios\|android)(?<theme>Dark)?Value$", "defaultSurface": "desktop", "defaultTheme": "light" }` |
-| Component prop has the right type for token-reference but the extractor's TS type inspection can't see it (loose typing, `string`-typed props) | Per-prop override in `manifest-overrides/<ds-id>/<package>.overrides.json`, OR opt-in convention map via `tokenConventionMap` | See `manifest-overrides/<ds>/<package>.overrides.json` shape |
+| Non-component infra packages | `"excludePackages": ["analytics", "hooks", "core", "internal-*"]` | filter |
+| Docs at non-default path / multiple paths | `"docsRoot": ["auto-doc/docs/patterns", "docs"]` | extend |
+| PascalCase / 3-surface token leaf keys | `"tokenAxisGrammar": { "pattern": "^(?<surface>desktop\|ios\|android)(?<theme>Dark)?Value$", "defaultSurface": "desktop", "defaultTheme": "light" }` | extend |
+| Different CSS var naming on DS runtime | `"tokenCssVarPattern": "--tui-{namespace}-{binding}-{variant}"` | extend |
+| Corporate Qwen fork (this is for setup, not audit, but if you spot constraints note them) | edits go into `runtimes.config.json` (NOT `manifest.config.json`). Format: `{ "runtimes": { "qwen": { "bin": "qwen-corp.exe", "buildArgs": [...] } } }`. See `runtimes.config.example.json` for the full shape. | dedicated file |
+| Per-prop kind override (loose typing, type-erased) | per-package `manifest-overrides/<ds>/<package>.overrides.json` | n/a (handled at build time) |
 
-When you find one of these, mark the check `[ok via config]` in the report and quote the exact config block the operator should paste into `manifest.config.json`. Reserve `[gap]` / `❌ Blocking` for things that truly need a code change in `packages/manifest/src/*`.
+---
 
-## 6. Rules of engagement (terse, for fast reference)
+## §5 — found a real bug? do this
 
-1. **Read-only.** No edits to repo files except the one report you create.
-2. **No installs.** Don't `npm install`, don't `pnpm i`, don't add deps.
-3. **No builds.** Don't run `npm run manifest:build`. The whole point is to predict what would happen if you did.
-4. **No network.** You don't need GitHub, the agent's API providers, or anything external. Local file reads only.
-5. **One file out.** `docs/audit-report.md`. No supplementary files, no patches.
-6. **Be specific.** Every check ends with a file path, a regex hit, or a "not found" with a specific path you looked at.
-7. **Stop when done.** Don't propose to "go ahead and fix" anything. The operator decides what to fix, in a separate pass, with a separate agent (or by hand).
+If during reading you find a real bug in the pipeline source (e.g. `discoverSymbols` doesn't handle some legitimate re-export pattern that exists in the DS), **do NOT edit the file**. Write into `docs/audit-report.md`'s `## Required code changes`:
+
+```
+- File: packages/manifest/src/scan/discovery.ts
+- Function: walkFile (around line N)
+- Expected: handles `export * from "./foo"` re-exports
+- Observed: `.cache/beaver-ui/packages/header/src/index.ts` uses `export *` and the resulting manifest contains zero entries for that package
+- Repro: open packages/header/src/index.ts, see line 1; then check manifest-data/beaver/header.json (would be empty)
+- Smallest viable fix (prose): walkFile should recursively follow ExportDeclaration nodes that have no exportClause (i.e. `export * from "X"`), pulling target file exports into the same collected list.
+```
+
+The maintainer ships the fix upstream. The next audit/bring-up pass works from a fresh `git pull`.
+
+**You do not write a patch. You do not edit the file. The point of this pass is to surface, not to fix.**
+
+---
+
+## §6 — final reminders
+
+1. **You're the recon team, not the bring-up team.** Predict, don't act.
+2. **Read freely, write nothing.** Except `docs/audit-report.md`.
+3. **No `npm install`, no `npm run *`, no scripts.** All inferences are static from reading source.
+4. **No git mutations.** Worktree byte-identical except for the one report.
+5. **Single output file.** Stop after writing it.
+6. **A bug found is reported, not fixed.** That's the whole game. The patches you write locally get clobbered on the next `git pull` — surface the issue with enough detail that the maintainer fixes it once, upstream, with tests.

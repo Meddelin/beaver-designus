@@ -31,3 +31,7 @@ Thumbs.db
 *.tmp
 packages/preview-runtime/src/component-map.report.json
 tsconfig.dev.json
+
+# per-environment CLI runtime adapter overrides — operator copies
+# runtimes.config.example.json → runtimes.config.json and edits in place
+runtimes.config.json
