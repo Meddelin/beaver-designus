@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "esModuleInterop": true,
+    "allowImportingTsExtensions": true,
+    "allowSyntheticDefaultImports": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM"],
+    "baseUrl": ".",
+    "paths": {
+      "@shared/*": ["shared/*"],
+      "@preview/*": ["packages/preview-runtime/src/*"],
+      "@manifest-data/*": ["manifest-data/*"]
+    }
+  },
+  "include": ["daemon/**/*", "web/**/*", "shared/**/*", "packages/**/*"]
+}

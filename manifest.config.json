@@ -1,0 +1,21 @@
+{
+  "$comment": "Per ARCHITECTURE §11/§3.2 — list of design systems the manifest builder walks. Stage 1 runs once per entry, keyed by id; tokenRoot triggers stage 4b. Replace the localPath values with paths to your cloned DS repos (or set BEAVER_LOCAL_PATH / REACT_UI_KIT_LOCAL_PATH env vars and have the loader fall back to those).",
+  "designSystems": [
+    {
+      "id": "beaver",
+      "categoryHint": "organism",
+      "source": { "localPath": "./.cache/beaver-ui" },
+      "componentRoot": "packages",
+      "docsRoot": "packages/*/docs"
+    },
+    {
+      "id": "react-ui-kit",
+      "categoryHint": "atom",
+      "source": { "localPath": "./.cache/react-ui-kit" },
+      "componentRoot": "packages",
+      "docsRoot": "packages/*/docs",
+      "tokenRoot": "packages/design-tokens"
+    }
+  ],
+  "output": { "dir": "./manifest-data" }
+}

@@ -1,0 +1,11 @@
+/* preview-runtime placeholder stylesheet.
+ *
+ * Empty by design — the real DS ships its own CSS (or styled-components
+ * runtime). After you wire your DS via `packages/preview-runtime/src/component-map.ts`,
+ * either:
+ *   1. import the DS's own CSS bundle here, or
+ *   2. leave this empty and have web/src/main.tsx import the DS CSS directly.
+ *
+ * Manifest-generated CSS variables ship as `manifest-data/tokens.css` and are
+ * imported once by `web/src/main.tsx` at preview boot.
+ */

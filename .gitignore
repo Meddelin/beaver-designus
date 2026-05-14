@@ -1,0 +1,31 @@
+# deps + build
+node_modules
+dist
+build
+
+# runtime state — written by the daemon, never committed
+.beaver-designus
+data
+*.log
+
+# generated manifest artifacts — `npm run manifest:build` produces these
+# from your wired DS. Keep manifest-data/ as a directory (tokens.css
+# placeholder is checked in so vite's static import resolves on first run)
+# but don't track the contents.
+manifest-data/*
+!manifest-data/tokens.css
+
+# DS clones — operator drops real repos here per manifest.config.json
+.cache
+
+# tests + scratch
+tests/screenshots
+test-results
+playwright-report
+
+# editor / OS noise
+.idea
+.vscode
+.DS_Store
+Thumbs.db
+*.tmp

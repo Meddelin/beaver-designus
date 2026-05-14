@@ -1,0 +1,31 @@
+import * as React from "react";
+import { createRoot } from "react-dom/client";
+import { Toaster } from "sonner";
+import { App } from "./App.tsx";
+import { ThemeProvider } from "./lib/theme.tsx";
+import "../../manifest-data/tokens.css";
+import "../../packages/preview-runtime/src/styles.css";
+import "./index.css";
+
+const root = createRoot(document.getElementById("root")!);
+root.render(
+  <ThemeProvider>
+    <App />
+    <Toaster
+      position="bottom-right"
+      theme="dark"
+      richColors={false}
+      closeButton
+      toastOptions={{
+        style: {
+          background: "var(--paper-2)",
+          color: "var(--ink-0)",
+          border: "1px solid var(--line)",
+          fontFamily: '"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif',
+          fontSize: "13px",
+          borderRadius: "10px",
+        },
+      }}
+    />
+  </ThemeProvider>
+);
