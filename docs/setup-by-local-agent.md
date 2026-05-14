@@ -97,6 +97,18 @@ Start from the existing file. Update each DS's `source.localPath` to `./.cache/<
 
 Run the **audit playbook** at `docs/audit-by-local-agent.md` mentally as you fill the config. Specifically: every check listed in §5a of that document maps to one or two fields here. Common config patterns:
 
+#### 1.4.0 Shortcut: T-Bank Beaver + react-ui-kit
+
+If the operator confirms the DSes are **T-Bank Beaver `v0.244.x`** and **react-ui-kit `release-2026.05-Neodymium`** (or compatible later builds), skip §1.4.1–§1.4.4 and copy the audit-derived config directly:
+
+```bash
+cp manifest.config.tbank.example.json manifest.config.json
+```
+
+That file pins `excludePackages`, `componentRoot`, `docsRoot`, and `tokenAxisGrammar` to the values the audit at `docs/audit-report.md` validated against the real repos. Still walk §1.4.5 to confirm the JSON parses on this Node version.
+
+If the operator's DS version differs materially (different componentRoot, different token namespaces, different layout), the example is no longer authoritative — do §1.4.1–§1.4.4 from scratch.
+
 #### 1.4.1 Internal packages (`excludePackages`)
 
 `ls .cache/<ds>/packages` and identify everything that is **not** a UI component package (analytics, hooks, core, deprecated, internal-*, test-helpers, etc.). Add each basename to `excludePackages` with `*`-globs where useful. Auto-skipped already: `design-tokens`.

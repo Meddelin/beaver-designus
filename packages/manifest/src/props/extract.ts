@@ -190,11 +190,25 @@ function classifyType(typeNode: ts.TypeNode | undefined): PropEntry["kind"] {
   }
 
   if (ts.isTypeOperatorNode(typeNode) && typeNode.operator === ts.SyntaxKind.KeyOfKeyword) {
-    // `keyof typeof spacing.scale`  — operand is a TypeQueryNode pointing at spacing.scale.
+    // `keyof typeof <expr>` — operand is a TypeQueryNode.
+    //
+    // We only auto-classify as token-reference when the expression is a
+    // member access (`<namespace>.<key>`). Bare identifiers
+    // (`keyof typeof SPACING_ALIAS`) fall through to `unsupported`, since
+    // we can't tell from one file whether the const is a token-namespace
+    // member or just a local literal-key map (`createTextSizes`, etc.).
+    //
+    // The operator turns these into the right kind via a per-prop entry
+    // in `manifest-overrides/<ds>/<package>.overrides.json`:
+    //   { kind: { type: "literal-union", options: [...] } }   // local map
+    //   { kind: { type: "token-reference", group: "color.brand" } }   // token
     const operand = typeNode.type;
     if (ts.isTypeQueryNode(operand)) {
-      const exprName = operand.exprName.getText(); // "spacing.scale"
-      return { type: "token-reference", group: exprName };
+      const exprName = operand.exprName.getText();
+      if (exprName.includes(".")) {
+        return { type: "token-reference", group: exprName };
+      }
+      return { type: "unsupported", raw: `keyof typeof ${exprName}` };
     }
     return { type: "unsupported", raw: typeNode.getText() };
   }

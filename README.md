@@ -38,7 +38,7 @@ The preview will render `UnknownComponentFallback` chips for every node because 
 ## Wiring a real design system
 
 1. Clone your DS repo(s) into `./.cache/<ds-id>` (or anywhere — adjust `manifest.config.json` `source.localPath`).
-2. Run `npm run manifest:build`. The pipeline (per ARCHITECTURE §3.2) discovers packages, extracts prop signatures via the TypeScript compiler, parses Docusaurus MDX docs and Storybook stories as fallback, and (if `tokenRoot` is set) extracts design tokens into `manifest-data/tokens.{json,css}`.
+2. Run `npm run manifest:build`. The pipeline (per ARCHITECTURE §3.2) discovers packages, extracts prop signatures via the TypeScript compiler, parses Docusaurus MDX docs and Storybook stories as fallback, and (if `tokenRoot` is set) extracts design tokens into `manifest-data/tokens.{json,css}`. *Shortcut for T-Bank Beaver + react-ui-kit:* `cp manifest.config.tbank.example.json manifest.config.json` — pre-tuned to the audited shape (componentRoot, excludePackages, docsRoot, PascalCase 3-surface tokenAxisGrammar).
 3. Regenerate `packages/preview-runtime/src/component-map.ts` — one entry per `<sourceSystem>:<package>/<exportName>` id pointing at the real React component.
 4. Run `npm run dev` again — the preview now renders your DS's actual components.
 

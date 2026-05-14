@@ -1,0 +1,35 @@
+{
+  "$comment": "Audit-derived manifest config for the T-Bank Beaver (v0.244.x) + react-ui-kit (release-2026.05-Neodymium) pair. Copy to manifest.config.json, place repos at ./.cache/<id> (symlink, junction, or git clone), then run `npm run manifest:build`. Confirmed against docs/audit-report.md dated 2026-05-14.",
+  "designSystems": [
+    {
+      "id": "beaver",
+      "categoryHint": "organism",
+      "source": { "localPath": "./.cache/beaver-ui" },
+      "componentRoot": "packages",
+      "excludePackages": [
+        "analytics",
+        "context",
+        "hooks",
+        "core",
+        "internal-*",
+        "*-deprecated"
+      ],
+      "docsRoot": ["auto-doc/docs/patterns"]
+    },
+    {
+      "id": "react-ui-kit",
+      "categoryHint": "atom",
+      "source": { "localPath": "./.cache/react-ui-kit" },
+      "componentRoot": "packages/components",
+      "excludePackages": ["packages-internal", "submodules", "tinkoff-packages", "deprecated"],
+      "docsRoot": ["docs", "packages/components"],
+      "tokenRoot": "packages/design-tokens",
+      "tokenAxisGrammar": {
+        "pattern": "^(?<surface>desktop|ios|android)(?<theme>Dark)?Value$",
+        "defaultSurface": "desktop",
+        "defaultTheme": "light"
+      }
+    }
+  ],
+  "output": { "dir": "./manifest-data" }
+}
