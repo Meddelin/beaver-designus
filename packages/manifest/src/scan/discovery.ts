@@ -160,6 +160,22 @@ function walkFile(file: string, seen: Set<string>, out: DiscoveredSymbol[]): voi
   const sf = ts.createSourceFile(file, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 
   ts.forEachChild(sf, (node) => {
+    // export * from "./foo";  / export * as ns from "./foo";  — wildcard
+    // re-export with NO exportClause (or NamespaceExport, which we don't
+    // surface as a manifest entry — namespace bindings aren't components).
+    // Recurse into the target so its own declarations + named re-exports
+    // get collected via the normal walkFile flow.
+    if (
+      ts.isExportDeclaration(node) &&
+      !node.exportClause &&
+      node.moduleSpecifier &&
+      ts.isStringLiteral(node.moduleSpecifier)
+    ) {
+      if (node.isTypeOnly) return;
+      const resolved = resolveRelative(file, node.moduleSpecifier.text);
+      if (resolved) walkFile(resolved, seen, out);
+      return;
+    }
     // export { Foo } from "./Foo";  / export { Foo, Bar } from "./Foo";
     if (ts.isExportDeclaration(node) && node.exportClause && ts.isNamedExports(node.exportClause)) {
       const moduleSpec = node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier) ? node.moduleSpecifier.text : null;
@@ -206,6 +222,12 @@ function walkFile(file: string, seen: Set<string>, out: DiscoveredSymbol[]): voi
 }
 
 function findDeclarationInFile(file: string, exportName: string): string | null {
+  return findDeclarationInFileImpl(file, exportName, new Set());
+}
+
+function findDeclarationInFileImpl(file: string, exportName: string, seen: Set<string>): string | null {
+  if (seen.has(file)) return null;
+  seen.add(file);
   if (!existsSync(file)) return null;
   const src = readFileSync(file, "utf8");
   const sf = ts.createSourceFile(file, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -226,10 +248,24 @@ function findDeclarationInFile(file: string, exportName: string): string | null 
           const resolved = resolveRelative(file, n.moduleSpecifier.text);
           if (resolved) {
             const local = spec.propertyName?.text ?? name;
-            const inner = findDeclarationInFile(resolved, local);
+            const inner = findDeclarationInFileImpl(resolved, local, seen);
             if (inner) found = inner;
           }
         }
+      }
+    }
+    // export * from "./somewhere"  — wildcard re-export; need to chase
+    // because the exportName might be declared down that chain.
+    if (
+      ts.isExportDeclaration(n) &&
+      !n.exportClause &&
+      n.moduleSpecifier &&
+      ts.isStringLiteral(n.moduleSpecifier)
+    ) {
+      const resolved = resolveRelative(file, n.moduleSpecifier.text);
+      if (resolved) {
+        const inner = findDeclarationInFileImpl(resolved, exportName, seen);
+        if (inner) found = inner;
       }
     }
   });

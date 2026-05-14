@@ -9,8 +9,8 @@
 // The local bring-up agent should NOT hand-author component-map.ts. Run this
 // script after every `npm run manifest:build`.
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { join, resolve, dirname } from "node:path";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { join, resolve, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
@@ -19,6 +19,8 @@ const PROJECT_ROOT = resolve(__dirname, "..", "..", "..");
 const OUT_FILE = join(__dirname, "component-map.ts");
 const REPORT_FILE = join(__dirname, "component-map.report.json");
 const INDEX_PATH = join(PROJECT_ROOT, "manifest-data", "index.json");
+const CONFIG_PATH = join(PROJECT_ROOT, "manifest.config.json");
+const TSCONFIG_DEV_PATH = join(PROJECT_ROOT, "tsconfig.dev.json");
 
 interface ManifestEntryLite {
   id: string;
@@ -49,6 +51,18 @@ function run(): void {
     console.error(`[preview:wire] ${INDEX_PATH} not found. Run \`npm run manifest:build\` first.`);
     process.exit(2);
   }
+
+  // Step 0 — Before anything else, write tsconfig.dev.json with DS path
+  // aliases derived from manifest.config.json. Without this, every tsc
+  // check below would surface TS2307 (Cannot find module @ds/X) because
+  // DS packages live in .cache/<ds>/<componentRoot>/* — not in our root
+  // node_modules. The dev tsconfig extends the project tsconfig and adds
+  // <scope>/* → .cache/<ds>/<componentRoot>/* paths.
+  const writtenAliases = writeTsconfigDev();
+  if (writtenAliases.length) {
+    console.log(`[preview:wire] wrote tsconfig.dev.json with ${writtenAliases.length} DS scope alias(es)`);
+  }
+
   const idx = JSON.parse(readFileSync(INDEX_PATH, "utf8"));
   const entries: ManifestEntryLite[] = idx.entries ?? [];
   if (entries.length === 0) {
@@ -83,7 +97,7 @@ function run(): void {
   // tsconfig so module resolution mirrors the dev server.
   const tsCheck = spawnSync(
     process.platform === "win32" ? "npx.cmd" : "npx",
-    ["tsc", "--noEmit", "--pretty", "false"],
+    ["tsc", "--noEmit", "--pretty", "false", "-p", existsSync(TSCONFIG_DEV_PATH) ? "tsconfig.dev.json" : "tsconfig.json"],
     { cwd: PROJECT_ROOT, encoding: "utf8" }
   );
 
@@ -92,10 +106,26 @@ function run(): void {
     return;
   }
 
-  // Parse TS errors per file → identify failing imports → drop those packages
-  // and retry once. We don't iterate forever; the second emit either passes
-  // or we surface the errors as a report.
+  // Parse TS errors. Distinguish two failure classes:
+  //   TS2307 ("Cannot find module ...")        → resolution / config issue.
+  //     Don't drop packages — surface the failure with a concrete fix.
+  //   TS2305 / TS2724 ("has no exported member ...")  → real export
+  //     mismatch on the DS side. Drop the specific package(s) and retry.
   const errors = (tsCheck.stdout ?? "") + "\n" + (tsCheck.stderr ?? "");
+  const cmErrorLines = errors.split(/\r?\n/).filter((l) => l.includes("component-map.ts") && l.includes("error"));
+  const hasResolutionErrors = cmErrorLines.some((l) => /error TS2307/.test(l));
+  if (hasResolutionErrors) {
+    const sample = cmErrorLines.filter((l) => /error TS2307/.test(l)).slice(0, 5).join("\n");
+    warnings.push(
+      "tsc reported TS2307 (Cannot find module) — DS scope aliases are likely missing.\n" +
+        "  Hint: confirm `npm run setup:ds` ran successfully and tsconfig.dev.json contains the right paths.\n" +
+        "  Sample errors:\n" + sample
+    );
+    // Don't drop anything — keep the full component-map.ts so the
+    // operator can still inspect what was generated. Report the issue.
+    finalize(byPkg, droppedPackages, warnings, errors);
+    return;
+  }
   const failingPackages = extractFailingPackages(errors, byPkg);
 
   if (failingPackages.size === 0) {
@@ -121,7 +151,7 @@ function run(): void {
   emit(byPkg, droppedPackages);
   const tsCheck2 = spawnSync(
     process.platform === "win32" ? "npx.cmd" : "npx",
-    ["tsc", "--noEmit", "--pretty", "false"],
+    ["tsc", "--noEmit", "--pretty", "false", "-p", existsSync(TSCONFIG_DEV_PATH) ? "tsconfig.dev.json" : "tsconfig.json"],
     { cwd: PROJECT_ROOT, encoding: "utf8" }
   );
   if (tsCheck2.status !== 0) {
@@ -241,6 +271,87 @@ export function resolveComponent(id: string): React.ComponentType<any> {
 
 function writeReport(report: object): void {
   writeFileSync(REPORT_FILE, JSON.stringify(report, null, 2) + "\n");
+}
+
+/* Derive scope→path aliases from manifest.config.json and write
+ * tsconfig.dev.json that extends the project tsconfig. Returns the list
+ * of aliases written so the caller can log it.
+ *
+ * For each DS in the config:
+ *  - Look at <dsRoot>/<componentRoot>/<first-pkg>/package.json
+ *  - Extract `name` (e.g. "@tui-react/button") → scope "@tui-react"
+ *  - Emit `<scope>/*` → `<dsRoot>/<componentRoot>/*`
+ *
+ * This handles the common case where package basename matches the
+ * second segment of the package name. DSes with name/basename
+ * divergence need explicit per-package paths — left as a follow-up.
+ */
+function writeTsconfigDev(): string[] {
+  if (!existsSync(CONFIG_PATH)) return [];
+  const cfg = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+
+  // Preserve the project's base paths. The dev config's `paths` REPLACES
+  // the parent's, so we read base paths from the main tsconfig and
+  // concatenate. Use a tolerant JSONC-style strip-comments parse —
+  // typical tsconfig.json has no comments in this repo, but be safe.
+  let basePaths: Record<string, string[]> = {};
+  const tsRoot = join(PROJECT_ROOT, "tsconfig.json");
+  if (existsSync(tsRoot)) {
+    try {
+      const raw = readFileSync(tsRoot, "utf8").replace(/\/\/[^\n]*/g, "");
+      const parsed = JSON.parse(raw);
+      basePaths = parsed?.compilerOptions?.paths ?? {};
+    } catch {
+      // Fall through with empty basePaths — `extends` still pulls compilerOptions.
+    }
+  }
+
+  const dsPaths: Record<string, string[]> = {};
+  const writtenAliases: string[] = [];
+
+  for (const ds of cfg.designSystems ?? []) {
+    const localPath = ds?.source?.localPath;
+    const componentRoot = ds?.componentRoot;
+    if (!localPath || !componentRoot) continue;
+    const dsRoot = resolve(PROJECT_ROOT, localPath);
+    const pkgsDir = resolve(dsRoot, componentRoot);
+    if (!existsSync(pkgsDir)) continue;
+
+    // Find the first package and read its scope.
+    let scope: string | null = null;
+    for (const dir of readdirSync(pkgsDir)) {
+      const pjPath = join(pkgsDir, dir, "package.json");
+      if (!existsSync(pjPath)) continue;
+      try {
+        const pj = JSON.parse(readFileSync(pjPath, "utf8"));
+        if (typeof pj.name === "string" && pj.name.startsWith("@") && pj.name.includes("/")) {
+          scope = pj.name.split("/")[0];
+          break;
+        }
+      } catch {}
+    }
+    if (!scope) continue;
+
+    // Build the path mapping (relative to PROJECT_ROOT for tsconfig).
+    const relRoot = relative(PROJECT_ROOT, pkgsDir).replace(/\\/g, "/");
+    const alias = `${scope}/*`;
+    dsPaths[alias] = [`./${relRoot}/*`];
+    writtenAliases.push(`${alias} → ./${relRoot}/*`);
+  }
+
+  // If the operator passes peerless DSes (no scope or empty pkgsDir), we
+  // still emit a tsconfig.dev.json that just inherits base paths — keeps
+  // the downstream `tsc -p tsconfig.dev.json` working without surprises.
+  const merged = { ...basePaths, ...dsPaths };
+  const out = {
+    $comment: "Auto-generated by `npm run preview:wire`. Refreshes every run. Don't hand-edit; rerun the generator to regenerate.",
+    extends: "./tsconfig.json",
+    compilerOptions: {
+      paths: merged,
+    },
+  };
+  writeFileSync(TSCONFIG_DEV_PATH, JSON.stringify(out, null, 2) + "\n");
+  return writtenAliases;
 }
 
 /* Convert "@tui-react/checkbox" → "TuiReactCheckbox".  "@beaver-ui/button" → "BeaverUiButton". */

@@ -46,17 +46,68 @@ function readDsPackageNames(): string[] {
   }
 }
 
+/* Derive scope→path aliases mirroring what `npm run preview:wire` writes
+ * into tsconfig.dev.json. Returns an alias array suitable for Vite's
+ * resolve.alias config. We compute it here directly (rather than read
+ * tsconfig.dev.json) so the dev server works even before the first
+ * preview:wire run — same source of truth (manifest.config.json) avoids
+ * drift. */
+function readDsScopeAliases(): Array<{ find: RegExp; replacement: string }> {
+  const cfgPath = resolve(PROJECT_ROOT, "manifest.config.json");
+  if (!existsSync(cfgPath)) return [];
+  const aliases: Array<{ find: RegExp; replacement: string }> = [];
+  try {
+    const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+    for (const ds of cfg.designSystems ?? []) {
+      const localPath: string | undefined = ds?.source?.localPath;
+      const componentRoot: string | undefined = ds?.componentRoot;
+      if (!localPath || !componentRoot) continue;
+      const dsRoot = resolve(PROJECT_ROOT, localPath);
+      const pkgsDir = resolve(dsRoot, componentRoot);
+      const fs = require("node:fs") as typeof import("node:fs");
+      if (!fs.existsSync(pkgsDir)) continue;
+      // Find one package, extract its scope from package.json `name`.
+      for (const dir of fs.readdirSync(pkgsDir)) {
+        const pjPath = resolve(pkgsDir, dir, "package.json");
+        if (!fs.existsSync(pjPath)) continue;
+        try {
+          const pj = JSON.parse(fs.readFileSync(pjPath, "utf8"));
+          if (typeof pj.name === "string" && pj.name.startsWith("@") && pj.name.includes("/")) {
+            const scope = pj.name.split("/")[0];
+            // Vite's resolve.alias accepts a regex `find`. We match
+            // `<scope>/<rest>` and rewrite to `<absPkgsDir>/<rest>`.
+            // Escape regex meta in the scope (only @ and - are common).
+            const escaped = scope.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            aliases.push({
+              find: new RegExp(`^${escaped}/(.+)`),
+              replacement: `${pkgsDir.replace(/\\/g, "/")}/$1`,
+            });
+            break;
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+  return aliases;
+}
+
 const dsPaths = readManifestConfigDsPaths();
 const dsPackages = readDsPackageNames();
+const dsAliases = readDsScopeAliases();
 
 export default defineConfig({
   root: __dirname,
   resolve: {
-    alias: {
-      "@shared": resolve(__dirname, "../shared"),
-      "@preview": resolve(__dirname, "../packages/preview-runtime/src"),
-      "@manifest-data": resolve(__dirname, "../manifest-data"),
-    },
+    alias: [
+      // Project-internal aliases. Strings (not regex) so they apply on
+      // exact-prefix match for the bare alias word.
+      { find: "@shared", replacement: resolve(__dirname, "../shared") },
+      { find: "@preview", replacement: resolve(__dirname, "../packages/preview-runtime/src") },
+      { find: "@manifest-data", replacement: resolve(__dirname, "../manifest-data") },
+      // DS scope aliases — derived from manifest.config.json so adding a
+      // new DS doesn't require a vite.config change.
+      ...dsAliases,
+    ],
     // Force a single copy of React across symlinked DS packages.
     dedupe: ["react", "react-dom"],
     // Default behaviour is to follow symlinks — pin it so an upstream change
