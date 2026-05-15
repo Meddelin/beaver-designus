@@ -15,6 +15,8 @@ import remarkFrontmatter from "remark-frontmatter";
 import remarkMdx from "remark-mdx";
 import { visit } from "unist-util-visit";
 import { parseMdxRegex } from "./mdx-regex.ts";
+import { parseExprToJson } from "./usage.ts";
+import type { JsonValue } from "../types.ts";
 
 export interface ParsedMdx {
   title: string | null;
@@ -71,6 +73,44 @@ function extractText(node: any): string {
   if (typeof node.value === "string") return node.value;
   if (Array.isArray(node.children)) return node.children.map(extractText).join("");
   return "";
+}
+
+/* P2 — find the first JSX usage of `<exportName .../>` in an MDX doc and
+ * statically read its attributes into JSON. String attributes win directly;
+ * `prop={<expr>}` attributes are parsed iff statically representable;
+ * boolean shorthand (`<C disabled/>`) → true. Returns null when there's no
+ * usage or no usable attributes. Never evaluates anything. */
+export function findJsxUsage(file: string, exportName: string): Record<string, JsonValue> | null {
+  let raw: string;
+  try { raw = readFileSync(file, "utf8"); } catch { return null; }
+  let tree: ReturnType<typeof processor.parse>;
+  try { tree = processor.parse(raw); } catch { return null; }
+
+  let result: Record<string, JsonValue> | null = null;
+  visit(tree, (node: any) => {
+    if (result) return;
+    if (
+      (node.type === "mdxJsxFlowElement" || node.type === "mdxJsxTextElement") &&
+      node.name === exportName &&
+      Array.isArray(node.attributes)
+    ) {
+      const out: Record<string, JsonValue> = {};
+      for (const attr of node.attributes) {
+        if (attr?.type !== "mdxJsxAttribute" || typeof attr.name !== "string") continue;
+        const v = attr.value;
+        if (v == null) {
+          out[attr.name] = true; // boolean shorthand
+        } else if (typeof v === "string") {
+          out[attr.name] = v;
+        } else if (v && typeof v === "object" && typeof v.value === "string") {
+          const parsed = parseExprToJson(v.value);
+          if (parsed !== undefined) out[attr.name] = parsed;
+        }
+      }
+      if (Object.keys(out).length > 0) result = out;
+    }
+  });
+  return result;
 }
 
 export function findAllMdx(rootDir: string): string[] {

@@ -14,6 +14,12 @@
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import ts from "typescript";
+import { astToJson } from "./usage.ts";
+import type { JsonValue } from "../types.ts";
+
+/* Preferred story names — a "Default"/"Basic" story is the canonical
+ * minimal usage; fall through in this order, else first story with args. */
+const STORY_PRIORITY = ["default", "basic", "primary", "playground", "example", "overview"];
 
 export interface ParsedStorybook {
   title: string | null;
@@ -145,4 +151,105 @@ function findConstDecl(sf: ts.SourceFile, name: string): ts.Expression | null {
 
 function hasExportModifier(node: ts.VariableStatement): boolean {
   return Boolean(node.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword));
+}
+
+/* P2 — pull the best story's `args` for `exportName`, statically. Handles
+ * CSF3 (`export const Default = { args: {…} }`) and CSF2
+ * (`export const Default = Template.bind({}); Default.args = {…}`).
+ * Returns the args as JSON (non-representable values dropped) or null. */
+export function extractStoryArgs(
+  pkgRoot: string,
+  exportName: string
+): { storyId: string; args: Record<string, JsonValue> } | null {
+  for (const file of findAllStories(pkgRoot)) {
+    const hit = storyArgsInFile(file, exportName);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function storyArgsInFile(
+  file: string,
+  exportName: string
+): { storyId: string; args: Record<string, JsonValue> } | null {
+  let raw: string;
+  try { raw = readFileSync(file, "utf8"); } catch { return null; }
+  const sf = ts.createSourceFile(file, raw, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+
+  // Relevance: same permissive rule parseStorybook uses (title tail or
+  // filename mentions the export) so we don't borrow another component's args.
+  let title: string | null = null;
+  const argsAssignments = new Map<string, ts.ObjectLiteralExpression>();
+  const storyObjects = new Map<string, ts.ObjectLiteralExpression>();
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isExportAssignment(node) && !node.isExportEquals) {
+      const expr = ts.isIdentifier(node.expression) ? findConstDecl(sf, node.expression.text) : node.expression;
+      if (expr && ts.isObjectLiteralExpression(expr)) {
+        for (const p of expr.properties) {
+          if (ts.isPropertyAssignment(p) && keyName(p.name) === "title" && ts.isStringLiteral(p.initializer)) {
+            title = p.initializer.text;
+          }
+        }
+      }
+    }
+    // CSF3: export const Default = { args: {...} }  (optionally `: Story`)
+    if (ts.isVariableStatement(node) && hasExportModifier(node)) {
+      for (const d of node.declarationList.declarations) {
+        if (d.name && ts.isIdentifier(d.name) && d.initializer && d.name.text !== "default") {
+          if (ts.isObjectLiteralExpression(d.initializer)) storyObjects.set(d.name.text, d.initializer);
+        }
+      }
+    }
+    // CSF2: Default.args = { ... }
+    if (
+      ts.isExpressionStatement(node) &&
+      ts.isBinaryExpression(node.expression) &&
+      node.expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isPropertyAccessExpression(node.expression.left) &&
+      node.expression.left.name.text === "args" &&
+      ts.isIdentifier(node.expression.left.expression) &&
+      ts.isObjectLiteralExpression(node.expression.right)
+    ) {
+      argsAssignments.set(node.expression.left.expression.text, node.expression.right);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+
+  const titleTail = (title as string | null)?.split("/").pop() ?? "";
+  if (titleTail && titleTail !== exportName && !file.toLowerCase().includes(exportName.toLowerCase())) {
+    return null;
+  }
+
+  // Candidate story names = union of CSF3 objects + CSF2 args assignments.
+  const names = new Set<string>([...storyObjects.keys(), ...argsAssignments.keys()]);
+  if (names.size === 0) return null;
+
+  const ordered = [...names].sort((a, b) => rank(a) - rank(b));
+  for (const name of ordered) {
+    let argsObj: ts.ObjectLiteralExpression | undefined = argsAssignments.get(name);
+    if (!argsObj) {
+      const obj = storyObjects.get(name);
+      const argsProp = obj?.properties.find(
+        (p): p is ts.PropertyAssignment => ts.isPropertyAssignment(p) && keyName(p.name) === "args"
+      );
+      if (argsProp && ts.isObjectLiteralExpression(argsProp.initializer)) argsObj = argsProp.initializer;
+    }
+    if (!argsObj) continue;
+    const json = astToJson(argsObj);
+    if (json && typeof json === "object" && !Array.isArray(json) && Object.keys(json).length > 0) {
+      return { storyId: name, args: json as Record<string, JsonValue> };
+    }
+  }
+  return null;
+}
+
+function rank(name: string): number {
+  const i = STORY_PRIORITY.indexOf(name.toLowerCase());
+  return i === -1 ? STORY_PRIORITY.length : i;
+}
+
+function keyName(n: ts.PropertyName): string | null {
+  return ts.isIdentifier(n) || ts.isStringLiteral(n) || ts.isNumericLiteral(n) ? n.text : null;
 }

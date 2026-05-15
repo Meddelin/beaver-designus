@@ -14,8 +14,9 @@ import { join, resolve, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { discoverPackages, discoverSymbols } from "./scan/discovery.ts";
 import { extractComponent, inferSlotPolicy } from "./props/extract.ts";
-import { parseMdx, findAllMdx } from "./docs/mdx.ts";
-import { parseStorybook, findAllStories } from "./docs/storybook.ts";
+import { parseMdx, findAllMdx, findJsxUsage } from "./docs/mdx.ts";
+import { parseStorybook, findAllStories, extractStoryArgs } from "./docs/storybook.ts";
+import { buildUsage } from "./docs/usage.ts";
 import { extractTokens } from "./tokens/extract.ts";
 import { loadOverrides, applyOverride, type OverrideMap } from "./overrides.ts";
 import { parseConfig, type ManifestConfigT } from "./config-schema.ts";
@@ -160,6 +161,18 @@ export async function build(): Promise<void> {
         });
 
         const id = `${ds.id}:${pkg.name}/${sym.exportName}`;
+
+        // Stage 3 (P2) — canonical usage seed. Tier 1: Storybook story
+        // args (best — authored, compiling, realistic). Tier 2: first MDX
+        // JSX usage. Tier 3: synthesize from required-prop shapes. All
+        // static; nothing from the DS is executed.
+        const storyArgs = extractStoryArgs(pkg.root, sym.exportName);
+        const mdxFile = storyArgs
+          ? null
+          : matchMdxFileForExport(perPackageDocsDir, dsLevelMdxFiles, sym.exportName);
+        const mdxAttrs = mdxFile ? findJsxUsage(mdxFile, sym.exportName) : null;
+        const usage = buildUsage(id, props, storyArgs, mdxAttrs);
+
         const baseEntry: ManifestEntry = {
           id,
           sourceSystem: ds.id,
@@ -172,6 +185,7 @@ export async function build(): Promise<void> {
           slots,
           examples,
           tags,
+          ...(usage ? { usage } : {}),
         };
         const entry = applyOverride(baseEntry, overrides);
         perDsEntries.push(entry);
@@ -223,6 +237,18 @@ function matchMdxByAncestor(allFiles: string[], exportName: string): ReturnType<
   for (const f of allFiles) {
     const segments = f.replace(/\\/g, "/").split("/");
     if (segments.includes(exportName)) return parseMdx(f);
+  }
+  return null;
+}
+
+/* Same matching rules as the two matchers above, but returns the file path
+ * so P2 can statically read its JSX usage. */
+function matchMdxFileForExport(docsDir: string, dsLevel: string[], exportName: string): string | null {
+  for (const f of findAllMdx(docsDir)) {
+    if (parseMdx(f).title === exportName || basename(f).startsWith(exportName + ".")) return f;
+  }
+  for (const f of dsLevel) {
+    if (f.replace(/\\/g, "/").split("/").includes(exportName)) return f;
   }
   return null;
 }

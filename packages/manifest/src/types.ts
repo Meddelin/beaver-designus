@@ -9,4 +9,7 @@ export type {
   SlotPolicy,
   ExampleSnippet,
   ManifestEntry,
+  PrototypeSeed,
+  ComponentUsage,
+  JsonValue,
 } from "../../../shared/types.ts";

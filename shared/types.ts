@@ -63,6 +63,25 @@ export interface ExampleSnippet {
   code: string;
 }
 
+/** A nodeId-free prototype subtree — the shape `usage.tree` carries and the
+ *  `insert_subtree` MCP tool instantiates (nodeIds are assigned at insert). */
+export interface PrototypeSeed {
+  component: string;
+  props: Record<string, JsonValue>;
+  children?: PrototypeSeed[];
+  slots?: Record<string, PrototypeSeed[]>;
+}
+
+/** Canonical "how to use this component" derived from the DS's own
+ *  Storybook story args (best), MDX JSX usage, or synthesized from the
+ *  prop shapes (last resort). The agent starts from `tree` and adapts. */
+export interface ComponentUsage {
+  tree: PrototypeSeed;
+  source: "storybook" | "mdx" | "synthesized";
+  /** Provenance — the story export name when source is "storybook". */
+  storyId?: string;
+}
+
 export interface ManifestEntry {
   id: string;
   sourceSystem: string;
@@ -75,6 +94,8 @@ export interface ManifestEntry {
   slots: SlotPolicy;
   examples: ExampleSnippet[];
   tags: string[];
+  /** Present when a canonical usage example could be derived (P2). */
+  usage?: ComponentUsage;
 }
 
 export interface PrototypeNode {
