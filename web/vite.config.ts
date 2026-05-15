@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { withDsTransformResilience } from "./vite-ds-resilience.ts";
+import { withDsTransformResilience, dsJsxPrePlugin } from "./vite-ds-resilience.ts";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, "..");
@@ -214,6 +214,8 @@ export default defineConfig(async () => ({
     preserveSymlinks: false,
   },
   plugins: [
+    // F10: compile JSX in legacy DS `.js` before React/import-analysis.
+    dsJsxPrePlugin(dsPaths),
     ...withDsTransformResilience(reactPluginWithDecorators(), dsPaths),
     ...(await dsCssPlugins()),
   ],

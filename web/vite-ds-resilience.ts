@@ -13,9 +13,56 @@
 // the per-node RenderErrorBoundary (P4). Same "degrade visibly, never
 // crash everything" contract as UnknownComponentFallback.
 
+import { transform as esbuildTransform } from "esbuild";
+
 export function isDsSource(id: string, dsRoots: string[]): boolean {
   const norm = id.split("?")[0].replace(/\\/g, "/").replace(/^\/@fs\//, "/");
   return dsRoots.some((r) => r && norm.includes(r.replace(/\\/g, "/")));
+}
+
+/* F10 — a DS `.js` file that contains JSX. @vitejs/plugin-react skips
+ * Babel when there are no babel plugins / no fast-refresh trigger
+ * (`canSkipBabel`), handing the `.js` to Vite's esbuild which uses the
+ * plain `js` loader — so `vite:import-analysis` then chokes on raw JSX
+ * ("name the file .jsx or .tsx"). Modern DS source is `.tsx` (untouched);
+ * only legacy trees (react-ui-kit/deprecated/tinkoff-packages) ship
+ * `.js`+JSX. We only ever target `.js` under a DS root → zero blast
+ * radius on our own TypeScript. */
+export function shouldPreTransformDsJs(id: string, dsRoots: string[]): boolean {
+  const clean = id.split("?")[0];
+  if (!/\.js$/i.test(clean)) return false;
+  return isDsSource(id, dsRoots);
+}
+
+/* Pre-enforced plugin: compile JSX→JS for DS `.js` BEFORE the React
+ * plugin / import-analysis run. If esbuild can't parse it (decorators,
+ * Flow, genuinely broken legacy) we fall back to the F6 stub so one bad
+ * deprecated file degrades to a visible marker instead of white-screening
+ * the whole preview — same contract as withDsTransformResilience. */
+export function dsJsxPrePlugin(dsRoots: string[]): any {
+  return {
+    name: "beaver:ds-js-jsx",
+    enforce: "pre",
+    async transform(code: string, id: string) {
+      if (!shouldPreTransformDsJs(id, dsRoots)) return null;
+      try {
+        const out = await esbuildTransform(code, {
+          loader: "jsx",
+          jsx: "automatic",
+          jsxImportSource: "react",
+          sourcemap: true,
+          sourcefile: id.split("?")[0],
+        });
+        return { code: out.code, map: out.map };
+      } catch (err) {
+        console.warn(
+          `[vite] DS .js JSX pre-transform failed — serving a stub so the rest of the ` +
+            `preview survives. file=${id}\n        reason: ${(err as Error)?.message ?? String(err)}`
+        );
+        return { code: dsStubModule(id), map: null };
+      }
+    },
+  };
 }
 
 export function dsStubModule(id: string): string {
