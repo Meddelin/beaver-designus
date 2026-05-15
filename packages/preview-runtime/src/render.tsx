@@ -1,6 +1,6 @@
 import * as React from "react";
 import { COMPONENT_MAP } from "./component-map.ts";
-import { UnknownComponentFallback } from "./fallbacks.tsx";
+import { UnknownComponentFallback, RenderErrorBoundary } from "./fallbacks.tsx";
 import type { PrototypeNode } from "../../../shared/types.ts";
 
 export interface RenderProps {
@@ -47,8 +47,14 @@ function RenderNode({
     }
   }
 
+  // Per-node error boundary: a DS component that throws (missing required
+  // prop, bad data shape, internal DS bug) degrades to an inline error chip
+  // for THAT node only — the rest of the canvas keeps rendering. resetKey
+  // is the node's props so the boundary retries when the agent fixes them.
   const rendered = (
-    <Comp {...componentProps}>{flatChildren}</Comp>
+    <RenderErrorBoundary component={node.component} resetKey={JSON.stringify(node.props ?? {})}>
+      <Comp {...componentProps}>{flatChildren}</Comp>
+    </RenderErrorBoundary>
   );
 
   return (

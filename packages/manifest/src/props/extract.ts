@@ -13,9 +13,36 @@
 //  4. Capture JSDoc per property + the leading JSDoc on the component
 //     declaration (used as description fallback in stage 3).
 
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
+import { dirname, resolve as resolvePath } from "node:path";
 import ts from "typescript";
 import type { PropEntry, SlotPolicy } from "../types.ts";
+
+/** Library/DOM base types we deliberately do NOT expand when a props
+ *  interface `extends` them — they'd flood the manifest with hundreds of
+ *  irrelevant HTML/ARIA attributes and never carry app-meaningful required
+ *  props. Local/DS-defined bases ARE expanded. */
+const HERITAGE_SKIP = new Set([
+  "HTMLAttributes",
+  "AllHTMLAttributes",
+  "DetailedHTMLProps",
+  "AriaAttributes",
+  "DOMAttributes",
+  "SVGAttributes",
+  "SVGProps",
+  "HTMLProps",
+  "CSSProperties",
+  "ComponentProps",
+  "ComponentPropsWithRef",
+  "ComponentPropsWithoutRef",
+  "RefAttributes",
+  "ClassAttributes",
+  "Attributes",
+]);
+
+/** Generic wrappers that are transparent — the real props are the first
+ *  type argument (e.g. `PropsWithChildren<SimpleTableProps<T>>`). */
+const TRANSPARENT_WRAPPERS = new Set(["PropsWithChildren", "PropsWithRef"]);
 
 export interface ExtractedComponent {
   /** Export name we matched on. */
@@ -40,26 +67,23 @@ export function extractComponent(declarationFile: string, exportName: string): E
   const src = readFileSync(declarationFile, "utf8");
   const sf = ts.createSourceFile(declarationFile, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 
-  let propsTypeNode = locatePropsTypeNode(sf, exportName);
+  const propsTypeNode = locatePropsTypeNode(sf, exportName);
   const componentDecl = locateComponentDeclaration(sf, exportName);
 
   const description = componentDecl ? readJsDoc(componentDecl, src) : "";
-
-  // If propsTypeNode is a TypeReference (e.g. `ButtonProps`), try to
-  // dereference it to the matching interface/type-alias in the same file.
-  // Without this, `interface XProps { ... }` declared next to the component
-  // produces zero extracted props because collectMembers can't unwrap
-  // TypeReferenceNode.
-  if (propsTypeNode && ts.isTypeReferenceNode(propsTypeNode)) {
-    const dereffed = dereferenceLocalType(sf, propsTypeNode);
-    if (dereffed) propsTypeNode = dereffed;
-  }
 
   if (!propsTypeNode) {
     return { exportName, description, props: [], childrenShape: "none" };
   }
 
-  const members = collectMembers(propsTypeNode);
+  // Resolve the props type to a flat member list. Unlike the old
+  // local-only deref, this follows cross-file imports (`interface
+  // SimpleTableProps` living in ./types.ts), merges `extends` heritage
+  // from DS-local bases, and unwraps transparent wrappers like
+  // PropsWithChildren<…>. This is what makes generic / split-out props
+  // types (the SimpleTable case) yield real required props instead of
+  // `props: []` — so the agent never has to hand-author them.
+  const members = resolvePropsMembers(declarationFile, sf, propsTypeNode, new Set(), 0);
   const props: PropEntry[] = [];
   let childrenShape: ExtractedComponent["childrenShape"] = "none";
 
@@ -178,42 +202,187 @@ function lastTypeReference(args: readonly ts.TypeNode[]): ts.TypeNode | null {
   return null;
 }
 
-/* Resolve a TypeReferenceNode (e.g. `ButtonProps`, `Props`) to the matching
- * `interface X {}` or `type X = {...}` declared earlier in the same source
- * file. Returns the unwrapped TypeNode (a TypeLiteralNode for interfaces, the
- * aliased type for type-aliases). One-level resolution only; if the alias
- * points at another TypeReference, the caller may recurse manually.
+/* Resolve a props TypeNode to a flat list of member signatures.
  *
- * Tracks bindings declared by NamedImports separately — for `import { Props
- * } from "./types"` we don't follow cross-file (yet); operators handle that
- * via overrides. */
-function dereferenceLocalType(sf: ts.SourceFile, ref: ts.TypeReferenceNode): ts.TypeNode | null {
-  const name = ref.typeName.getText();
-  let found: ts.TypeNode | null = null;
+ * Recursively (depth + seen-set guarded against cycles) handles:
+ *  - inline `{ ... }` type literals
+ *  - intersections `A & B & { ... }` and parenthesized types
+ *  - TypeReference → local `interface X` / `type X` in the same file
+ *  - TypeReference → a type imported or re-exported from a RELATIVE module
+ *    (`import { SimpleTableProps } from "./types"`, `export * from "./x"`),
+ *    resolved on disk and parsed
+ *  - interface `extends` heritage — DS-local bases expanded, DOM/React
+ *    library bases (HERITAGE_SKIP) skipped
+ *  - transparent generic wrappers (`PropsWithChildren<RealProps>`)
+ *
+ * Generic type arguments are intentionally ignored: we read the declared
+ * members of `SimpleTableProps<T>`, so a `data: T[]` member still produces
+ * { name:"data", required:true }. That required flag is the whole point —
+ * it's what lets the agent (and prop-validator) know the prop exists,
+ * instead of the manifest emitting `props: []` and the component crashing
+ * at render. No per-component hand-authoring required. */
+function resolvePropsMembers(
+  filePath: string,
+  sf: ts.SourceFile,
+  node: ts.TypeNode,
+  seen: Set<string>,
+  depth: number
+): ts.TypeElement[] {
+  if (depth > 8) return [];
+
+  if (ts.isParenthesizedTypeNode(node)) {
+    return resolvePropsMembers(filePath, sf, node.type, seen, depth + 1);
+  }
+  if (ts.isTypeLiteralNode(node)) {
+    return [...node.members];
+  }
+  if (ts.isIntersectionTypeNode(node)) {
+    const acc: ts.TypeElement[] = [];
+    for (const t of node.types) acc.push(...resolvePropsMembers(filePath, sf, t, seen, depth + 1));
+    return acc;
+  }
+  if (!ts.isTypeReferenceNode(node) || !ts.isIdentifier(node.typeName)) return [];
+
+  const name = node.typeName.text;
+  if (HERITAGE_SKIP.has(name)) return [];
+  if (TRANSPARENT_WRAPPERS.has(name)) {
+    const inner = node.typeArguments?.[0];
+    return inner ? resolvePropsMembers(filePath, sf, inner, seen, depth + 1) : [];
+  }
+
+  const key = `${filePath}#${name}`;
+  if (seen.has(key)) return [];
+  seen.add(key);
+
+  const local = findTypeDeclaration(sf, name);
+  if (local) return membersOfDeclaration(filePath, sf, local, seen, depth);
+
+  return resolveImportedName(filePath, sf, name, seen, depth) ?? [];
+}
+
+function findTypeDeclaration(
+  sf: ts.SourceFile,
+  name: string
+): ts.InterfaceDeclaration | ts.TypeAliasDeclaration | null {
+  let found: ts.InterfaceDeclaration | ts.TypeAliasDeclaration | null = null;
   ts.forEachChild(sf, (n) => {
     if (found) return;
-    if (ts.isInterfaceDeclaration(n) && n.name.text === name) {
-      // Include heritage clauses' members would be nice, but TS gives us only
-      // the interface's own member list here. Cross-interface inheritance
-      // (`extends OtherProps`) drops props — operator overrides cover it.
-      found = ts.factory.createTypeLiteralNode(n.members);
-    }
-    if (ts.isTypeAliasDeclaration(n) && n.name.text === name) {
-      found = n.type;
-    }
+    if (ts.isInterfaceDeclaration(n) && n.name.text === name) found = n;
+    else if (ts.isTypeAliasDeclaration(n) && n.name.text === name) found = n;
   });
   return found;
 }
 
-function collectMembers(typeNode: ts.TypeNode): readonly ts.TypeElement[] {
-  if (ts.isTypeLiteralNode(typeNode)) return typeNode.members;
-  // Intersection — flatten one level.
-  if (ts.isIntersectionTypeNode(typeNode)) {
-    const acc: ts.TypeElement[] = [];
-    for (const t of typeNode.types) acc.push(...collectMembers(t));
-    return acc;
+function membersOfDeclaration(
+  filePath: string,
+  sf: ts.SourceFile,
+  decl: ts.InterfaceDeclaration | ts.TypeAliasDeclaration,
+  seen: Set<string>,
+  depth: number
+): ts.TypeElement[] {
+  if (ts.isTypeAliasDeclaration(decl)) {
+    return resolvePropsMembers(filePath, sf, decl.type, seen, depth + 1);
   }
-  return [];
+  const acc: ts.TypeElement[] = [...decl.members];
+  for (const h of decl.heritageClauses ?? []) {
+    if (h.token !== ts.SyntaxKind.ExtendsKeyword) continue;
+    for (const t of h.types) {
+      if (!ts.isIdentifier(t.expression)) continue;
+      const baseName = t.expression.text;
+      if (HERITAGE_SKIP.has(baseName)) continue;
+      const ref = ts.factory.createTypeReferenceNode(baseName, t.typeArguments);
+      acc.push(...resolvePropsMembers(filePath, sf, ref, seen, depth + 1));
+    }
+  }
+  return acc;
+}
+
+/* `name` not declared locally — see if it's brought in by a relative
+ * `import { name }` / `import { orig as name }`, re-exported via
+ * `export { name } from "./x"`, or covered by an `export * from "./barrel"`,
+ * and recurse into that file. Package (non-relative) specifiers are out of
+ * scope — those are third-party and not part of the DS prop surface. */
+function resolveImportedName(
+  filePath: string,
+  sf: ts.SourceFile,
+  name: string,
+  seen: Set<string>,
+  depth: number
+): ts.TypeElement[] | null {
+  const fromDir = dirname(filePath);
+  const barrels: string[] = [];
+
+  for (const st of sf.statements) {
+    if (
+      ts.isImportDeclaration(st) &&
+      st.importClause?.namedBindings &&
+      ts.isNamedImports(st.importClause.namedBindings) &&
+      ts.isStringLiteral(st.moduleSpecifier)
+    ) {
+      for (const el of st.importClause.namedBindings.elements) {
+        if (el.name.text !== name) continue;
+        const orig = el.propertyName?.text ?? el.name.text;
+        const hit = recurseIntoModule(fromDir, st.moduleSpecifier.text, orig, seen, depth);
+        if (hit) return hit;
+      }
+    }
+    if (ts.isExportDeclaration(st) && st.moduleSpecifier && ts.isStringLiteral(st.moduleSpecifier)) {
+      if (st.exportClause && ts.isNamedExports(st.exportClause)) {
+        for (const el of st.exportClause.elements) {
+          if (el.name.text !== name) continue;
+          const orig = el.propertyName?.text ?? el.name.text;
+          const hit = recurseIntoModule(fromDir, st.moduleSpecifier.text, orig, seen, depth);
+          if (hit) return hit;
+        }
+      } else {
+        barrels.push(st.moduleSpecifier.text);
+      }
+    }
+  }
+  for (const spec of barrels) {
+    const hit = recurseIntoModule(fromDir, spec, name, seen, depth);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function recurseIntoModule(
+  fromDir: string,
+  spec: string,
+  name: string,
+  seen: Set<string>,
+  depth: number
+): ts.TypeElement[] | null {
+  if (!spec.startsWith(".")) return null;
+  const file = resolveRelativeModule(fromDir, spec);
+  if (!file) return null;
+  let src: string;
+  try {
+    src = readFileSync(file, "utf8");
+  } catch {
+    return null;
+  }
+  const tsf = ts.createSourceFile(file, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const decl = findTypeDeclaration(tsf, name);
+  if (decl) return membersOfDeclaration(file, tsf, decl, seen, depth + 1);
+  return resolveImportedName(file, tsf, name, seen, depth + 1);
+}
+
+function resolveRelativeModule(fromDir: string, spec: string): string | null {
+  const base = resolvePath(fromDir, spec);
+  const candidates = [
+    `${base}.ts`,
+    `${base}.tsx`,
+    `${base}.d.ts`,
+    resolvePath(base, "index.ts"),
+    resolvePath(base, "index.tsx"),
+    resolvePath(base, "index.d.ts"),
+    base, // spec already carried an extension
+  ];
+  for (const c of candidates) {
+    if ((c.endsWith(".ts") || c.endsWith(".tsx")) && existsSync(c)) return c;
+  }
+  return null;
 }
 
 function classifyType(typeNode: ts.TypeNode | undefined): PropEntry["kind"] {
@@ -330,7 +499,7 @@ export function inferSlotPolicy(
   const propsTypeNode = locatePropsTypeNode(sf, exportName);
   const slotNames: string[] = [];
   if (propsTypeNode) {
-    for (const m of collectMembers(propsTypeNode)) {
+    for (const m of resolvePropsMembers(componentFile, sf, propsTypeNode, new Set(), 0)) {
       if (!ts.isPropertySignature(m) || !ts.isIdentifier(m.name)) continue;
       const name = m.name.text;
       if (name === "children") continue;
