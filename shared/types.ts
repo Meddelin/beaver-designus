@@ -9,6 +9,31 @@ export type JsonValue =
   | JsonValue[]
   | { [k: string]: JsonValue };
 
+/**
+ * Recursive structural description of a prop's type. Where `kind` is the
+ * flat legacy classification (kept for back-compat + the MCP enum
+ * backstop), `shape` is the precise tree the agent uses to synthesize
+ * valid sample data, prop-validator uses to structurally validate, and the
+ * Inspector uses to render a real editor. Depth/cycle-bounded at extraction
+ * time; unresolved named types degrade to `ref`, anything we can't model to
+ * `unknown` (never throws, never omitted for a non-slot prop).
+ */
+export type PropShape =
+  | { t: "string" }
+  | { t: "number" }
+  | { t: "boolean" }
+  | { t: "literal"; value: string | number | boolean }
+  | { t: "enum"; options: Array<string | number | boolean> }
+  | { t: "array"; element: PropShape }
+  | { t: "tuple"; items: PropShape[] }
+  | { t: "object"; fields: Array<{ name: string; optional: boolean; shape: PropShape }> }
+  | { t: "record"; value: PropShape }
+  | { t: "union"; variants: PropShape[] }
+  | { t: "function"; arity: number }
+  | { t: "react-node" }
+  | { t: "ref"; name: string }
+  | { t: "unknown"; raw: string };
+
 export interface PropEntry {
   name: string;
   kind:
@@ -19,6 +44,9 @@ export interface PropEntry {
     | { type: "react-node" }
     | { type: "token-reference"; group: string }
     | { type: "unsupported"; raw: string };
+  /** Precise recursive shape. Optional only for forward-compat with old
+   *  manifests; the current builder always emits it for non-slot props. */
+  shape?: PropShape;
   required: boolean;
   description: string;
   defaultValue?: string;

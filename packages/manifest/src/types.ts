@@ -5,6 +5,7 @@
 
 export type {
   PropEntry,
+  PropShape,
   SlotPolicy,
   ExampleSnippet,
   ManifestEntry,
