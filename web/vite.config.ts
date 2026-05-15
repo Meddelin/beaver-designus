@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import { withDsTransformResilience } from "./vite-ds-resilience.ts";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, "..");
@@ -212,7 +213,10 @@ export default defineConfig(async () => ({
     // (or a stray .npmrc) can't flip the resolution mode silently.
     preserveSymlinks: false,
   },
-  plugins: [reactPluginWithDecorators(), ...(await dsCssPlugins())],
+  plugins: [
+    ...withDsTransformResilience(reactPluginWithDecorators(), dsPaths),
+    ...(await dsCssPlugins()),
+  ],
   css: ((): any => {
     const postcss = readPostcssConfig();
     return postcss ? { postcss } : {};
