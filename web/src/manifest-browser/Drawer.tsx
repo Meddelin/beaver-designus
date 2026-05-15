@@ -5,7 +5,7 @@ import { X, Sparkles, Hash, Layers, Tag, Code2, ArrowRight, Trash2, Check } from
 import { api } from "../api/client.ts";
 import { Pill, IconButton, Button } from "../ui/primitives.tsx";
 import { cn } from "../lib/cn.ts";
-import type { ManifestEntry } from "@shared/types.ts";
+import type { ManifestEntry, PropShape, JsonValue } from "@shared/types.ts";
 
 // Shape of manifest-data/tokens.json (per ARCHITECTURE §3.1.1).
 interface TokenManifest {
@@ -120,6 +120,8 @@ function DrawerContent({
   onSetProp?: (propName: string, propValue: unknown) => Promise<void> | void;
   onRemoveNode?: () => Promise<void> | void;
 }): React.ReactElement {
+  // P2/P5 — canonical example values, used for the "reset to example" affordance.
+  const usageProps = (entry.usage?.tree?.props ?? {}) as Record<string, JsonValue>;
   return (
     <div className="flex-1 flex flex-col min-h-0">
       <div className="px-4 pt-3 pb-3 border-b border-line">
@@ -155,6 +157,7 @@ function DrawerContent({
                     key={p.name}
                     prop={p}
                     currentValue={nodeProps[p.name]}
+                    usageValue={usageProps[p.name]}
                     editable={Boolean(nodeId && onSetProp)}
                     onChange={(v) => onSetProp?.(p.name, v)}
                   />
@@ -208,40 +211,63 @@ function DrawerContent({
 function EditablePropRow({
   prop,
   currentValue,
+  usageValue,
   editable,
   onChange,
 }: {
   prop: any;
   currentValue: unknown;
+  usageValue?: JsonValue;
   editable: boolean;
   onChange: (v: unknown) => void | Promise<void>;
 }): React.ReactElement {
+  const label = prop.shape ? shapeLabel(prop.shape) : kindLabel(prop.kind);
+  const canReset =
+    editable && usageValue !== undefined && JSON.stringify(usageValue) !== JSON.stringify(currentValue);
   return (
     <div className="rounded-md border border-line bg-paper-1 px-3 py-2.5">
       <div className="flex items-baseline gap-1.5 flex-wrap mb-1.5">
         <code className="font-mono text-[12.5px] text-ink-0">{prop.name}</code>
         {prop.required ? <span className="text-state-warning text-[10px] font-mono uppercase tracking-wider">req</span> : null}
         <span className="text-ink-3 text-[12px]">:</span>
-        <code className="font-mono text-[11.5px] text-accent/80">{kindLabel(prop.kind)}</code>
+        <code className="font-mono text-[11.5px] text-accent/80">{label}</code>
         {prop.defaultValue ? (
           <span className="text-ink-3 text-[10.5px] font-mono">default {prop.defaultValue}</span>
+        ) : null}
+        {canReset ? (
+          <button
+            type="button"
+            onClick={() => void onChange(usageValue)}
+            title={`Reset to the design system's example value:\n${truncate(JSON.stringify(usageValue), 200)}`}
+            className="ml-auto text-[10.5px] font-mono text-ink-3 hover:text-accent transition-colors"
+          >
+            ↺ example
+          </button>
         ) : null}
       </div>
       {prop.description ? (
         <p className="mb-2 text-[11.5px] text-ink-2 leading-snug">{prop.description}</p>
       ) : null}
-      <PropEditor kind={prop.kind} currentValue={currentValue} editable={editable} onChange={onChange} />
+      <PropEditor
+        kind={prop.kind}
+        shape={prop.shape}
+        currentValue={currentValue}
+        editable={editable}
+        onChange={onChange}
+      />
     </div>
   );
 }
 
 function PropEditor({
   kind,
+  shape,
   currentValue,
   editable,
   onChange,
 }: {
   kind: any;
+  shape?: PropShape;
   currentValue: unknown;
   editable: boolean;
   onChange: (v: unknown) => void | Promise<void>;
@@ -309,11 +335,280 @@ function PropEditor({
   if (kind?.type === "token-reference") {
     return <TokenPicker group={kind.group} currentValue={currentValue} editable={editable} onChange={onChange} />;
   }
+  // `kind` is too coarse here (unsupported / object / array). Drive the
+  // editor off the P1 recursive shape instead — this is what makes
+  // structured props (table columns/data, option lists, …) editable.
+  if (shape) {
+    return <ShapeEditor shape={shape} currentValue={currentValue} editable={editable} onChange={onChange} />;
+  }
   return (
     <div className="text-[11.5px] font-mono text-ink-3 italic">
       not editable here {currentValue !== undefined ? <>· current: <code className="text-ink-1">{JSON.stringify(currentValue)}</code></> : null}
     </div>
   );
+}
+
+/* Shape-driven editor. Primitives/enums get the same focused controls as the
+ * kind path; object/array/tuple/record/union fall to a JSON editor with
+ * live, lenient shape validation (server is still authoritative). */
+function ShapeEditor({
+  shape,
+  currentValue,
+  editable,
+  onChange,
+}: {
+  shape: PropShape;
+  currentValue: unknown;
+  editable: boolean;
+  onChange: (v: unknown) => void | Promise<void>;
+}): React.ReactElement {
+  switch (shape.t) {
+    case "string":
+      return <TextEditor currentValue={currentValue} editable={editable} onChange={onChange} parse={(s) => s} />;
+    case "number":
+      return (
+        <TextEditor
+          currentValue={currentValue}
+          editable={editable}
+          onChange={onChange}
+          parse={(s) => {
+            const n = Number(s);
+            return Number.isFinite(n) ? n : undefined;
+          }}
+        />
+      );
+    case "boolean": {
+      const v = currentValue === true;
+      return (
+        <button
+          type="button"
+          disabled={!editable}
+          onClick={() => onChange(!v)}
+          className={cn(
+            "inline-flex items-center gap-2 h-7 px-2.5 rounded-sm border text-[11.5px] font-mono transition-colors",
+            v ? "bg-accent text-[var(--accent-contrast)] border-accent" : "bg-paper-2 text-ink-1 border-line"
+          )}
+        >
+          <span className={cn("w-3 h-3 rounded-full border", v ? "bg-[var(--accent-contrast)] border-[var(--accent-contrast)]" : "border-ink-3")} />
+          {v ? "true" : "false"}
+        </button>
+      );
+    }
+    case "literal":
+      return (
+        <button
+          type="button"
+          disabled={!editable}
+          onClick={() => onChange(shape.value)}
+          className="h-7 px-2.5 rounded-sm text-[11.5px] font-mono border bg-paper-2 text-ink-1 border-line hover:bg-paper-3"
+        >
+          {JSON.stringify(shape.value)}
+        </button>
+      );
+    case "enum": {
+      const opts = shape.options;
+      return (
+        <div className="flex flex-wrap gap-1.5">
+          {opts.map((opt) => {
+            const active = currentValue === opt;
+            return (
+              <button
+                key={String(opt)}
+                type="button"
+                disabled={!editable}
+                onClick={() => onChange(opt)}
+                className={cn(
+                  "h-7 px-2.5 rounded-sm text-[11.5px] font-mono border transition-colors flex items-center gap-1",
+                  active
+                    ? "bg-accent text-[var(--accent-contrast)] border-accent font-medium"
+                    : "bg-paper-2 text-ink-1 border-line hover:bg-paper-3 hover:text-ink-0",
+                  !editable && "opacity-50 cursor-not-allowed"
+                )}
+              >
+                {active ? <Check size={10} /> : null}
+                {typeof opt === "string" ? `"${opt}"` : String(opt)}
+              </button>
+            );
+          })}
+        </div>
+      );
+    }
+    case "union": {
+      // If every variant is a literal/enum, present a flat option set.
+      const flat: Array<string | number | boolean> = [];
+      let allSimple = true;
+      for (const v of shape.variants) {
+        if (v.t === "literal") flat.push(v.value);
+        else if (v.t === "enum") flat.push(...v.options);
+        else allSimple = false;
+      }
+      if (allSimple && flat.length) {
+        return (
+          <ShapeEditor
+            shape={{ t: "enum", options: flat }}
+            currentValue={currentValue}
+            editable={editable}
+            onChange={onChange}
+          />
+        );
+      }
+      return <JsonEditor shape={shape} currentValue={currentValue} editable={editable} onChange={onChange} />;
+    }
+    case "react-node":
+      return (
+        <div className="text-[11.5px] font-mono text-ink-3 italic">
+          ReactNode — composed as a child/slot in the tree, not edited here
+        </div>
+      );
+    case "function":
+      return (
+        <div className="text-[11.5px] font-mono text-ink-3 italic">
+          callback (arity {shape.arity}) — wired by the design system, not set here
+        </div>
+      );
+    case "array":
+    case "tuple":
+    case "object":
+    case "record":
+    case "ref":
+    case "unknown":
+    default:
+      return <JsonEditor shape={shape} currentValue={currentValue} editable={editable} onChange={onChange} />;
+  }
+}
+
+/* JSON editor for structured props. Pretty-prints the current value, parses
+ * on apply, and runs the same lenient structural check the server uses so
+ * the user gets feedback before the round-trip. */
+function JsonEditor({
+  shape,
+  currentValue,
+  editable,
+  onChange,
+}: {
+  shape: PropShape;
+  currentValue: unknown;
+  editable: boolean;
+  onChange: (v: unknown) => void | Promise<void>;
+}): React.ReactElement {
+  const initial = currentValue === undefined ? "" : JSON.stringify(currentValue, null, 2);
+  const [draft, setDraft] = React.useState(initial);
+  React.useEffect(() => {
+    setDraft(currentValue === undefined ? "" : JSON.stringify(currentValue, null, 2));
+  }, [currentValue]);
+
+  const dirty = draft !== initial;
+  let parseError: string | null = null;
+  let parsed: JsonValue | undefined;
+  if (dirty && draft.trim()) {
+    try {
+      parsed = JSON.parse(draft) as JsonValue;
+      const r = shapeMatches(shape, parsed);
+      if (!r.ok) parseError = r.error;
+    } catch (e: any) {
+      parseError = `invalid JSON: ${e?.message ?? e}`;
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        disabled={!editable}
+        spellCheck={false}
+        rows={Math.min(14, Math.max(3, draft.split("\n").length))}
+        className={cn(
+          "w-full px-2 py-1.5 rounded-sm bg-paper-0 border text-[11.5px] leading-relaxed font-mono resize-y",
+          "focus:outline-none focus:border-accent/60",
+          parseError ? "border-state-error" : "border-line",
+          !editable && "opacity-50 cursor-not-allowed"
+        )}
+        placeholder="(unset)"
+      />
+      {parseError ? (
+        <span className="text-[10.5px] font-mono text-state-error">{parseError}</span>
+      ) : null}
+      <div className="flex items-center gap-2">
+        {dirty && editable ? (
+          <button
+            type="button"
+            disabled={Boolean(parseError)}
+            onClick={() => {
+              if (parseError) return;
+              void onChange(draft.trim() ? parsed : undefined);
+            }}
+            className={cn(
+              "h-7 px-2 rounded-sm text-[11px] font-mono",
+              parseError ? "bg-paper-2 text-ink-3 cursor-not-allowed" : "bg-accent text-[var(--accent-contrast)]"
+            )}
+          >
+            ↵ apply
+          </button>
+        ) : null}
+        {dirty ? (
+          <button
+            type="button"
+            onClick={() => setDraft(initial)}
+            className="h-7 px-2 rounded-sm text-[11px] font-mono text-ink-3 hover:text-ink-1"
+          >
+            revert
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/* Client-side mirror of daemon/prop-validator checkShape — deliberately
+ * lenient, advisory only (the daemon re-validates authoritatively). */
+function shapeMatches(shape: PropShape | undefined, v: JsonValue, depth = 0): { ok: true } | { ok: false; error: string } {
+  if (!shape || depth > 5) return { ok: true };
+  const ty = v === null ? "null" : Array.isArray(v) ? "array" : typeof v;
+  switch (shape.t) {
+    case "string": return ty === "string" ? { ok: true } : { ok: false, error: `expected string, got ${ty}` };
+    case "number": return ty === "number" ? { ok: true } : { ok: false, error: `expected number, got ${ty}` };
+    case "boolean": return ty === "boolean" ? { ok: true } : { ok: false, error: `expected boolean, got ${ty}` };
+    case "literal": return v === shape.value ? { ok: true } : { ok: false, error: `expected ${JSON.stringify(shape.value)}` };
+    case "enum":
+      return shape.options.some((o) => o === v) ? { ok: true } : { ok: false, error: `not in [${shape.options.map((o) => JSON.stringify(o)).join(", ")}]` };
+    case "array":
+    case "tuple":
+      if (!Array.isArray(v)) return { ok: false, error: `expected array, got ${ty}` };
+      if (shape.t === "array" && v.length > 0) return shapeMatches(shape.element, v[0], depth + 1);
+      return { ok: true };
+    case "object":
+      return v !== null && ty === "object" ? { ok: true } : { ok: false, error: `expected object, got ${ty}` };
+    case "union":
+      for (const variant of shape.variants) if (shapeMatches(variant, v, depth + 1).ok) return { ok: true };
+      return { ok: false, error: "no union variant matched" };
+    default:
+      return { ok: true };
+  }
+}
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n) + "…" : s;
+}
+
+function shapeLabel(shape: PropShape): string {
+  switch (shape.t) {
+    case "string": return "string";
+    case "number": return "number";
+    case "boolean": return "boolean";
+    case "literal": return JSON.stringify(shape.value);
+    case "enum": return shape.options.map((o) => JSON.stringify(o)).join(" | ");
+    case "array": return `${shapeLabel(shape.element)}[]`;
+    case "tuple": return `[${shape.items.map(shapeLabel).join(", ")}]`;
+    case "object": return `{ ${shape.fields.slice(0, 4).map((f) => f.name + (f.optional ? "?" : "")).join(", ")}${shape.fields.length > 4 ? ", …" : ""} }`;
+    case "record": return `Record<string, ${shapeLabel(shape.value)}>`;
+    case "union": return shape.variants.map(shapeLabel).join(" | ");
+    case "function": return `(…${shape.arity}) => …`;
+    case "react-node": return "ReactNode";
+    case "ref": return shape.name;
+    case "unknown": return shape.raw;
+    default: return "?";
+  }
 }
 
 /* Token picker — shows variants from the token group with a real value swatch
