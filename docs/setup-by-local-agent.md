@@ -99,6 +99,9 @@ Done. Continue to §1.4.
 | `designSystems[*].tokenRoot` | Path to design-tokens package | `"packages/design-tokens"` (one DS only) |
 | `designSystems[*].tokenAxisGrammar.pattern` | Regex matching the leaf-key vocabulary in `<token>.js` | `"^(?<surface>desktop\|ios\|android)(?<theme>Dark)?Value$"` |
 | `designSystems[*].tokenCssVarPattern` | Template for emitted CSS var names | `"--{namespace}-{binding}-{variant}"` (default works for most DSes) |
+| `designSystems[*].styles.globalStylesheets` | Relative paths (to DS root) of CSS the DS expects loaded ONCE — reset/base/layout or an aggregated bundle. Without this, components render unstyled (a table collapses to one column). | `["dist/index.css"]` or `["styles/reset.css","styles/base.css"]` |
+| `designSystems[*].styles.cssStrategy` | How the DS authors CSS. `auto` (default) detects it. Set explicitly if detection is wrong. | `"modules"` \| `"vanilla-extract"` \| `"linaria"` \| `"runtime-css-in-js"` \| `"auto"` |
+| `designSystems[*].styles.postcssConfig` | Path (rel to DS root) to the DS's own PostCSS config, reused so nesting/mixins compile like the DS build | `"postcss.config.cjs"` |
 
 `docs/audit-by-local-agent.md` §3 explains how to derive each of these from the DS source — but if the operator has already run an audit and given you the values, use them directly.
 
@@ -300,7 +303,7 @@ editing code, building the DS, or rewriting `manifest.config.json`.
 
 ### 1.8 `npm run preview:doctor`
 
-Preflight check. Runs seven validations:
+Preflight check. Runs eight validations:
 
 | Check | Verifies | Fix on failure |
 |---|---|---|
@@ -310,13 +313,18 @@ Preflight check. Runs seven validations:
 | `ds-paths-exist` | every `source.localPath` resolves | re-do §1.2 |
 | `ds-deps-installed` | every DS has `node_modules` | re-run §1.4 |
 | `preview-entries-resolve` | every manifest package has a loadable source entry on disk | **not a code fix** — record dropped packages in the setup-report's "Non-blocking deltas" and continue; see §2 |
+| `ds-styles-resolve` | declared `styles.globalStylesheets` exist; zero-runtime CSS strategy has its Vite plugin | declared-but-missing path → fix `styles.globalStylesheets` in `manifest.config.json`; "no global stylesheets" → add them (see §1.3 + audit doc); missing vanilla-extract/linaria plugin → **maintainer dep**, record in setup-report and continue |
 | `typecheck-component-map` | `tsc -p tsconfig.dev.json` is clean | re-run §1.7 |
 
 Each failure prints the concrete command (or instruction) to fix it. Run it,
-re-run `npm run preview:doctor`, repeat until all seven say `ok` — **except
-`preview-entries-resolve`**, which is informational: if the only remaining
-failure is dropped DS packages with no loadable entry, that is an accepted
-degraded state. Record it and proceed to §1.9.
+re-run `npm run preview:doctor`, repeat until all eight say `ok` — **except
+`preview-entries-resolve`** and the **maintainer-dep half of
+`ds-styles-resolve`** (a DS that needs the vanilla-extract/linaria Vite
+plugin), which are informational: if the only remaining failures are dropped
+DS packages with no loadable entry, or a missing zero-runtime CSS plugin,
+that is an accepted degraded state — record it in the setup-report and
+proceed to §1.9. The "declared global stylesheet not found" failure IS
+yours: it's a wrong path in `manifest.config.json` `styles.globalStylesheets`.
 
 ### 1.9 `npm run dev`
 
@@ -408,6 +416,8 @@ Stop. Don't restart the dev server. Don't commit. Don't push.
 | Vite browser console "MIME type ''" | DS path not in fs.allow | confirm `source.localPath` exists; `vite.config.ts` auto-reads it | edit `vite.config.ts` |
 | Smoke test times out without tool-call event | Qwen fork hangs on confirm OR auth env var missing | fix `runtimes.config.json` `buildArgs` (auto-approve flag) OR set env var in shell | edit `daemon/runtimes/defs/qwen.ts` or `load-overrides.ts` |
 | Tree renders but every node is `UnknownComponentFallback` | component-map didn't generate; OR id mismatch | re-run `preview:wire`; check `component-map.report.json` | hand-edit `component-map.ts` |
+| Components render but **unstyled** — a table is one column, no spacing/colors | the DS's global stylesheet isn't loaded into the preview | add the DS's "import once" CSS to `manifest.config.json` `designSystems[].styles.globalStylesheets` (see audit doc §3 / E6 for how to find it); set `styles.cssStrategy` if `auto` mis-detects; re-run `preview:wire` + `preview:doctor` | edit `vite.config.ts`, `main.tsx`, `preview-styles.ts`, or import CSS in code |
+| `ds-styles-resolve` says a zero-runtime CSS plugin is missing | DS uses vanilla-extract/linaria; the Vite plugin isn't installed | record in setup-report "Required next steps" (maintainer runs `npm i -D …`) and continue — server still boots | `npm i` the plugin yourself; edit `vite.config.ts` |
 | anything else | unknown | write into report, stop | improvise on code |
 
 ---

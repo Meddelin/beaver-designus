@@ -147,7 +147,10 @@ Note: as of 2026-05-14 the extractor recognises `forwardComponent<E, Props>(cb)`
 
 ### G. Browser run-readiness
 
-- **G1** — DS-shipped CSS. List CSS bundles each DS requires (e.g. `import "@react-ui-kit/styles"`). The bring-up agent adds these to `web/src/main.tsx`. If components use `.module.css` (handled by Vite's CSS-modules), no global import is needed.
+- **G1** — DS-shipped CSS (**styles config — drives `manifest.config.json` `designSystems[].styles`, NOT a code edit**). Determine, per DS:
+  - **`globalStylesheets`**: the CSS the DS expects a consumer to import ONCE — a reset/base/layout sheet or an aggregated bundle (look for the DS's own docs "import `@x/styles.css`", a top-level `styles.css`/`dist/index.css`, or a `./styles` export). Give the exact paths **relative to the DS root**. If components fully self-import their own `.module.css` and need no global sheet, say so and leave it `[]`.
+  - **`cssStrategy`**: detect how component CSS is authored — `*.css.ts`/`@vanilla-extract/css` dep → `vanilla-extract`; `@linaria/*`/`@wyw-in-js` → `linaria`; `styled-components`/`@emotion` dep → `runtime-css-in-js`; `.module.css` → `modules`. `auto` self-detects but quote the value you'd hard-set if detection looks wrong. **vanilla-extract/linaria need a maintainer-installed Vite plugin — flag that explicitly in the report.**
+  - **`postcssConfig`**: if the DS compiles CSS with nesting/custom-media/mixins via its own `postcss.config.*`, give that path (relative to DS root) so the preview reuses it.
 - **G2** — React provider requirements. If the DS needs a root `<ThemeProvider>` / `<DesignSystemProvider>`, note it. The bring-up agent will need to add it (and the maintainer has to expand the playbook to cover it — flag in the report).
 
 ### H. Scale
@@ -167,6 +170,7 @@ The pipeline already exposes config for most "real DS doesn't match assumptions"
 | Docs at non-default path / multiple paths | `"docsRoot": ["auto-doc/docs/patterns", "docs"]` | extend |
 | PascalCase / 3-surface token leaf keys | `"tokenAxisGrammar": { "pattern": "^(?<surface>desktop\|ios\|android)(?<theme>Dark)?Value$", "defaultSurface": "desktop", "defaultTheme": "light" }` | extend |
 | Different CSS var naming on DS runtime | `"tokenCssVarPattern": "--tui-{namespace}-{binding}-{variant}"` | extend |
+| DS needs a global stylesheet / has a CSS strategy (components render unstyled without it) | `"styles": { "globalStylesheets": ["dist/index.css"], "cssStrategy": "modules", "postcssConfig": "postcss.config.cjs" }` | extend |
 | Corporate Qwen fork (this is for setup, not audit, but if you spot constraints note them) | edits go into `runtimes.config.json` (NOT `manifest.config.json`). Format: `{ "runtimes": { "qwen": { "bin": "qwen-corp.exe", "buildArgs": [...] } } }`. See `runtimes.config.example.json` for the full shape. | dedicated file |
 | Per-prop kind override (loose typing, type-erased) | per-package `manifest-overrides/<ds>/<package>.overrides.json` | n/a (handled at build time) |
 

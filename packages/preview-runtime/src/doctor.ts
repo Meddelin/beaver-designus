@@ -193,6 +193,61 @@ const checks: Check[] = [
     },
   },
   {
+    id: "ds-styles-resolve",
+    description: "declared DS global stylesheets exist; CSS strategy has its Vite plugin",
+    run() {
+      const sidecar = join(PROJECT_ROOT, "manifest-data", "preview-styles.json");
+      if (!existsSync(sidecar)) {
+        return { ok: false, reason: "manifest-data/preview-styles.json missing", fix: "run `npm run preview:wire`" };
+      }
+      let j: any;
+      try {
+        j = JSON.parse(readFileSync(sidecar, "utf8"));
+      } catch (err) {
+        return { ok: false, reason: `preview-styles.json invalid JSON: ${(err as Error).message}`, fix: "re-run `npm run preview:wire`" };
+      }
+      const perDs: Array<{ id: string; strategy: string; resolved: string[]; missing: string[] }> = j.perDs ?? [];
+      // 1. Declared-but-missing global stylesheet → operator typo'd a path.
+      const broken = perDs.filter((d) => d.missing?.length);
+      if (broken.length) {
+        const lines = broken.map((d) => `${d.id}: ${d.missing.join(", ")}`).join(" | ");
+        return {
+          ok: false,
+          reason: `declared global stylesheet(s) not found — ${lines}`,
+          fix: "fix the relative paths in manifest.config.json `designSystems[].styles.globalStylesheets` (relative to the DS root)",
+        };
+      }
+      // 2. zero-runtime strategy needs a Vite plugin available.
+      const need: Record<string, string> = {
+        "vanilla-extract": "@vanilla-extract/vite-plugin",
+        linaria: "@wyw-in-js/vite",
+      };
+      for (const d of perDs) {
+        const dep = need[d.strategy];
+        if (!dep) continue;
+        const installed = existsSync(join(PROJECT_ROOT, "node_modules", ...dep.split("/")));
+        if (!installed) {
+          return {
+            ok: false,
+            reason: `DS '${d.id}' uses ${d.strategy} but ${dep} is not installed — its components render unstyled`,
+            fix: `maintainer installs it: \`npm i -D ${dep}\` (this is a code/dependency change, NOT a config one — record in docs/setup-report.md if you are the bring-up agent)`,
+          };
+        }
+      }
+      // 3. No global stylesheets anywhere — likely (not certainly) why
+      //    components look unstyled. Advisory, not a hard fail.
+      const total = perDs.reduce((n, d) => n + (d.resolved?.length ?? 0), 0);
+      if (perDs.length > 0 && total === 0) {
+        return {
+          ok: false,
+          reason: "no DS declares styles.globalStylesheets — DS component CSS may not reach the preview (unstyled / collapsed layout)",
+          fix: "in manifest.config.json add `designSystems[].styles.globalStylesheets` pointing at the DS's reset/base/aggregated CSS (see docs/audit-by-local-agent.md); if the DS components self-import their CSS this can be left empty",
+        };
+      }
+      return { ok: true };
+    },
+  },
+  {
     id: "typecheck-component-map",
     description: "tsc --noEmit on the project filters component-map.ts errors",
     run() {

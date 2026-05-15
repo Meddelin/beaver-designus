@@ -81,11 +81,79 @@ function readDsScopeAliases(): Array<{ find: RegExp; replacement: string }> {
   return aliases;
 }
 
+/* P6 — read the preview-styles.json sidecar (written by preview:wire) to
+ * learn which CSS strategies the wired DSes use, and conditionally load the
+ * matching Vite plugin. Optional plugins are dynamically imported and
+ * tolerated-missing: a DS that needs vanilla-extract/linaria but whose
+ * plugin isn't installed yields a loud console warning (and preview:doctor
+ * flags it) rather than a hard crash. */
+async function dsCssPlugins(): Promise<any[]> {
+  const sidecar = resolve(PROJECT_ROOT, "manifest-data", "preview-styles.json");
+  if (!existsSync(sidecar)) return [];
+  const strategies = new Set<string>();
+  try {
+    const j = JSON.parse(readFileSync(sidecar, "utf8"));
+    for (const d of j.perDs ?? []) if (d?.strategy) strategies.add(d.strategy);
+  } catch {
+    return [];
+  }
+  const out: any[] = [];
+  if (strategies.has("vanilla-extract")) {
+    try {
+      // Non-literal specifier: optional dep, must not be a static type/resolve dependency.
+      const mod: any = await import(["@vanilla-extract", "vite-plugin"].join("/"));
+      out.push(mod.vanillaExtractPlugin());
+    } catch {
+      console.warn(
+        "[vite] a wired DS uses vanilla-extract but @vanilla-extract/vite-plugin is not installed — " +
+          "its components will be unstyled. Maintainer: `npm i -D @vanilla-extract/vite-plugin`."
+      );
+    }
+  }
+  if (strategies.has("linaria")) {
+    try {
+      const mod: any = await import(["@wyw-in-js", "vite"].join("/"));
+      out.push((mod.default ?? mod)());
+    } catch {
+      console.warn(
+        "[vite] a wired DS uses linaria but @wyw-in-js/vite is not installed — " +
+          "its components will be unstyled. Maintainer: `npm i -D @wyw-in-js/vite`."
+      );
+    }
+  }
+  // "modules" and "runtime-css-in-js" need no extra plugin (Vite handles
+  // CSS Modules natively; styled-components/emotion inject at runtime).
+  return out;
+}
+
+/* If a DS points at its own PostCSS config, reuse it so nesting /
+ * custom-media / mixins compile the way the DS's own build does. */
+function readPostcssConfig(): string | undefined {
+  const cfgPath = resolve(PROJECT_ROOT, "manifest.config.json");
+  if (!existsSync(cfgPath)) return undefined;
+  try {
+    const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+    const found: string[] = [];
+    for (const ds of cfg.designSystems ?? []) {
+      const pc = ds?.styles?.postcssConfig;
+      const lp = ds?.source?.localPath;
+      if (pc && lp) found.push(resolve(PROJECT_ROOT, lp, pc));
+    }
+    const existing = found.filter((p) => existsSync(p));
+    if (existing.length > 1) {
+      console.warn(`[vite] multiple DS postcssConfig declared; using ${existing[0]}`);
+    }
+    return existing[0];
+  } catch {
+    return undefined;
+  }
+}
+
 const dsPaths = readManifestConfigDsPaths();
 const dsPackages = readDsPackageNames();
 const dsAliases = readDsScopeAliases();
 
-export default defineConfig({
+export default defineConfig(async () => ({
   root: __dirname,
   resolve: {
     alias: [
@@ -104,7 +172,11 @@ export default defineConfig({
     // (or a stray .npmrc) can't flip the resolution mode silently.
     preserveSymlinks: false,
   },
-  plugins: [react()],
+  plugins: [react(), ...(await dsCssPlugins())],
+  css: ((): any => {
+    const postcss = readPostcssConfig();
+    return postcss ? { postcss } : {};
+  })(),
   optimizeDeps: {
     // Don't try to pre-bundle DS packages — they're source TS in symlinked
     // out-of-tree dirs and Vite's esbuild pre-bundle fails on them. Let the
@@ -128,4 +200,4 @@ export default defineConfig({
       "/api": "http://127.0.0.1:7457",
     },
   },
-});
+}));

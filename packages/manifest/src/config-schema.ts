@@ -66,6 +66,28 @@ export const DesignSystemConfig = z
     /** Description shown in selector context (helps the agent pick a DS in
      *  forward-looking multi-DS sessions). */
     description: z.string().optional(),
+    /** P6 — how this DS's component CSS reaches the preview iframe. Without
+     *  this, components render unstyled (e.g. a table collapses to one
+     *  column). All paths are relative to the DS root.
+     *   - globalStylesheets: CSS the DS expects loaded ONCE by the consumer
+     *     (reset/base/layout + CSS-var defs, or an aggregated bundle).
+     *     Plain relative paths; the first existing of each is imported into
+     *     the preview document, in order, after tokens.css.
+     *   - cssStrategy: drives Vite's CSS handling. "auto" → detect from the
+     *     DS (\*.css.ts → vanilla-extract, .module.css → modules,
+     *     styled-components/@emotion/@linaria dep → that). "modules" is the
+     *     safe explicit default for most DSes.
+     *   - postcssConfig: path to the DS's own postcss config to reuse so
+     *     nesting/custom-media/mixins compile the way the DS build does. */
+    styles: z
+      .object({
+        globalStylesheets: z.array(z.string()).default([]),
+        cssStrategy: z
+          .enum(["modules", "runtime-css-in-js", "vanilla-extract", "linaria", "auto"])
+          .default("auto"),
+        postcssConfig: z.string().optional(),
+      })
+      .optional(),
   })
   .strict();
 

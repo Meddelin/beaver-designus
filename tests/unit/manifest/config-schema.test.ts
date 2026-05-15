@@ -74,4 +74,56 @@ describe("manifest.config.json — zod schema", () => {
     expect(cfg.designSystems[0].tokenConventionMap?.enabled).toBe(true);
     expect(cfg.designSystems[0].tokenConventionMap?.propNameToGroupPrefix?.color).toBe("color.brand");
   });
+
+  it("P6 — accepts a styles block and defaults cssStrategy to auto", () => {
+    const cfg = parseConfig({
+      designSystems: [
+        {
+          id: "x",
+          categoryHint: "atom",
+          source: { localPath: "./x" },
+          componentRoot: "packages",
+          styles: { globalStylesheets: ["dist/index.css", "src/reset.css"] },
+        },
+      ],
+      output: { dir: "./manifest-data" },
+    });
+    const s = cfg.designSystems[0].styles!;
+    expect(s.globalStylesheets).toEqual(["dist/index.css", "src/reset.css"]);
+    expect(s.cssStrategy).toBe("auto");
+  });
+
+  it("P6 — accepts an explicit cssStrategy + postcssConfig", () => {
+    const cfg = parseConfig({
+      designSystems: [
+        {
+          id: "x",
+          categoryHint: "atom",
+          source: { localPath: "./x" },
+          componentRoot: "packages",
+          styles: { cssStrategy: "vanilla-extract", postcssConfig: "postcss.config.cjs" },
+        },
+      ],
+      output: { dir: "./manifest-data" },
+    });
+    expect(cfg.designSystems[0].styles?.cssStrategy).toBe("vanilla-extract");
+    expect(cfg.designSystems[0].styles?.postcssConfig).toBe("postcss.config.cjs");
+  });
+
+  it("P6 — rejects an unknown cssStrategy", () => {
+    expect(() =>
+      parseConfig({
+        designSystems: [
+          {
+            id: "x",
+            categoryHint: "atom",
+            source: { localPath: "./x" },
+            componentRoot: "packages",
+            styles: { cssStrategy: "tailwind" },
+          },
+        ],
+        output: { dir: "./manifest-data" },
+      })
+    ).toThrow(/styles\.cssStrategy/);
+  });
 });
