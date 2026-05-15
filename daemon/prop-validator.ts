@@ -64,6 +64,38 @@ function typeofJson(v: JsonValue): string {
   return typeof v;
 }
 
+/* Minimal valid value from a shape — used as a fallback so a node with a
+ * missing required prop still ASSEMBLES (e.g. empty table) instead of the
+ * tool call hard-failing and the agent flailing. Returns undefined when we
+ * can't responsibly synthesize (function/react-node/ref/unknown). Mirrors
+ * the builder's synthesizer; kept daemon-local to avoid a cross-package
+ * import. */
+export function placeholderFromShape(shape: PropShape | undefined, depth = 0): JsonValue | undefined {
+  if (!shape || depth > 5) return undefined;
+  switch (shape.t) {
+    case "string": return "";
+    case "number": return 0;
+    case "boolean": return false;
+    case "literal": return shape.value;
+    case "enum": return shape.options[0];
+    case "array": return [];
+    case "tuple": return shape.items.map((s) => placeholderFromShape(s, depth + 1) ?? null);
+    case "record": return {};
+    case "union": return placeholderFromShape(shape.variants[0], depth + 1);
+    case "object": {
+      const out: { [k: string]: JsonValue } = {};
+      for (const f of shape.fields) {
+        if (f.optional) continue;
+        const v = placeholderFromShape(f.shape, depth + 1);
+        if (v !== undefined) out[f.name] = v;
+      }
+      return out;
+    }
+    default:
+      return undefined;
+  }
+}
+
 export type TokensManifest = {
   groups?: Record<string, { variants: Array<{ name: string }> }>;
 };
@@ -106,9 +138,17 @@ export function validateProps(
   }
 
   for (const p of entry.props) {
-    if (p.required && !(p.name in out)) {
+    if (!p.required || p.name in out) continue;
+    // Missing required prop: synthesize a minimal placeholder from the P1
+    // shape so the node still assembles (empty list / zeroed object) and
+    // the agent can fill the real value next, instead of the whole tool
+    // call failing. Only hard-fail when we genuinely can't synthesize.
+    const ph = placeholderFromShape(p.shape);
+    if (ph === undefined) {
       return { ok: false, error: `missing required prop ${p.name} on ${entry.id}` };
     }
+    out[p.name] = ph;
+    rejected.push({ name: p.name, reason: "required but missing — defaulted from shape" });
   }
 
   return { ok: true, props: out, rejected };
