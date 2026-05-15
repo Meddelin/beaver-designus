@@ -94,7 +94,7 @@ Done. Continue to §1.4.
 |---|---|---|
 | `designSystems[*].source.localPath` | Path to DS clone | `"./.cache/beaver-ui"` |
 | `designSystems[*].componentRoot` | Where packages live INSIDE the DS | `"packages"` or `"packages/components"` |
-| `designSystems[*].excludePackages` | Basename globs of non-UI packages | `["analytics", "hooks", "core", "internal-*"]` |
+| `designSystems[*].excludePackages` | Basename globs of non-UI packages **directly under `componentRoot`**. Dirs outside `componentRoot` (e.g. a sibling `tinkoff-packages/` legacy tree) are already not scanned — listing them here is a harmless no-op, not a fix for anything. | `["analytics", "hooks", "core", "internal-*"]` |
 | `designSystems[*].docsRoot` | Path(s) to MDX docs roots | `["auto-doc/docs/patterns"]` or `["docs", "packages/components"]` |
 | `designSystems[*].tokenRoot` | Path to design-tokens package | `"packages/design-tokens"` (one DS only) |
 | `designSystems[*].tokenAxisGrammar.pattern` | Regex matching the leaf-key vocabulary in `<token>.js` | `"^(?<surface>desktop\|ios\|android)(?<theme>Dark)?Value$"` |
@@ -421,6 +421,7 @@ Stop. Don't restart the dev server. Don't commit. Don't push.
 | `tsc`/`preview:doctor` error TS2307 on a `*.module.css`/`.scss`/`.less` import | DS uses CSS modules without shipping `.d.ts` | **nothing — auto-handled.** An ambient shim makes tsc ignore these; the components are kept, not dropped. If you still see it, your checkout is stale — `git pull` and re-run from §1.5 | add `@types/*`, edit tsconfig, or skip the package |
 | `preview:doctor`/report shows exports dropped with "non-component (tsc TS2352)" (e.g. `*Descriptor`) | discovery picked a data/type const that isn't a React component | **nothing — auto-handled.** The generator drops only those exports via the compiler; note the count in the report's "Non-blocking deltas" | hand-edit `component-map.ts` |
 | Vite overlay: `Failed to resolve import "@scope/pkg/legacy"` (a **subpath**) | DS-internal subpath import | **mostly auto-handled** — `preview:wire` now aliases subpaths declared in the package's `exports`. Still failing ⇒ the DS package doesn't declare that subpath in `exports` and has no `src/<sub>/index.*`: record in report "Non-blocking deltas", set ⚠️ if it blocks core components | edit `tsconfig.dev.json`/`vite.config.ts`/DS `package.json` |
+| Vite overlay: **`Support for the experimental syntax 'decorators' isn't currently enabled`** (e.g. `tinkoff-packages/.../ScrollBar.tsx`) | a *modern* kept component transitively imports legacy DS source that uses 2018-style class decorators; the DS's own build compiles these, so the preview must too | **auto-handled** once deps are installed — `npm install` pulls `@babel/plugin-proposal-decorators` and `vite.config.ts` enables legacy decorators. If the overlay persists, the dep didn't install: record in report "Required next steps" (maintainer runs `npm i -D @babel/plugin-proposal-decorators`) | add `tinkoff-packages` to `excludePackages` — **that is a no-op** (excludePackages only filters dirs *under* `componentRoot`; legacy dirs at the DS root are already not in the manifest, and excluding from the manifest does NOT stop Vite transforming a file a kept component imports). Do not edit `vite.config.ts` |
 | anything else | unknown | write into report, stop | improvise on code |
 
 ---

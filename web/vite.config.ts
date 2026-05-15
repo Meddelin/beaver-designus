@@ -3,9 +3,35 @@ import react from "@vitejs/plugin-react";
 import { resolve } from "node:path";
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, "..");
+const require = createRequire(import.meta.url);
+
+/* Real DS source (e.g. react-ui-kit's tinkoff-packages) still ships
+ * 2018-style class decorators (`@dragHOC class Foo extends …`). The DS's
+ * OWN build compiles these; a faithful preview must too, otherwise a
+ * single legacy file transitively imported by a *modern, supported*
+ * component takes down the whole iframe with a Babel parse error. So we
+ * enable legacy decorators in @vitejs/plugin-react's Babel pass.
+ *
+ * This is NOT our tech debt — we're compiling the DS as the DS does.
+ * Loaded defensively: if the plugin isn't installed yet, warn loudly
+ * (preview:doctor surfaces it) instead of hard-crashing the config. */
+function reactPluginWithDecorators() {
+  try {
+    const decorators = require.resolve("@babel/plugin-proposal-decorators");
+    return react({ babel: { plugins: [[decorators, { legacy: true }]] } });
+  } catch {
+    console.warn(
+      "[vite] @babel/plugin-proposal-decorators not installed — DS files using " +
+        "legacy class decorators (e.g. react-ui-kit tinkoff-packages) will fail to " +
+        "transform and crash the preview. Maintainer: `npm i -D @babel/plugin-proposal-decorators`."
+    );
+    return react();
+  }
+}
 
 /* Pull DS source paths out of manifest.config.json so Vite can serve files
  * from symlinked / out-of-tree DS clones. Two things we need:
@@ -186,7 +212,7 @@ export default defineConfig(async () => ({
     // (or a stray .npmrc) can't flip the resolution mode silently.
     preserveSymlinks: false,
   },
-  plugins: [react(), ...(await dsCssPlugins())],
+  plugins: [reactPluginWithDecorators(), ...(await dsCssPlugins())],
   css: ((): any => {
     const postcss = readPostcssConfig();
     return postcss ? { postcss } : {};
