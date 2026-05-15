@@ -6,7 +6,7 @@
 // the first failed check.
 
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { resolve, join, dirname } from "node:path";
+import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
@@ -139,6 +139,55 @@ const checks: Check[] = [
             fix: "run `npm run setup:ds` — installs DS transitive deps in-place",
           };
         }
+      }
+      return { ok: true };
+    },
+  },
+  {
+    id: "preview-entries-resolve",
+    description: "every DS package referenced by the manifest has a loadable source entry on disk",
+    run() {
+      const sidecar = join(PROJECT_ROOT, "manifest-data", "preview-aliases.json");
+      if (!existsSync(sidecar)) {
+        return {
+          ok: false,
+          reason: "manifest-data/preview-aliases.json missing",
+          fix: "run `npm run preview:wire` (it writes the sidecar from a real DS scan)",
+        };
+      }
+      const idxPath = join(PROJECT_ROOT, "manifest-data", "index.json");
+      let referenced: Set<string>;
+      try {
+        const idx = JSON.parse(readFileSync(idxPath, "utf8"));
+        referenced = new Set<string>((idx.entries ?? []).map((e: any) => e.packageName));
+      } catch {
+        return { ok: false, reason: "manifest-data/index.json unreadable", fix: "re-run `npm run manifest:build`" };
+      }
+      let pkgs: Record<string, { entry: string | null; dir: string }>;
+      try {
+        pkgs = JSON.parse(readFileSync(sidecar, "utf8")).packages ?? {};
+      } catch (err) {
+        return { ok: false, reason: `preview-aliases.json invalid JSON: ${(err as Error).message}`, fix: "re-run `npm run preview:wire`" };
+      }
+      // A manifest-referenced package with no resolvable entry → it was
+      // dropped from component-map.ts and would 404 in the preview iframe.
+      const broken = [...referenced].filter((name) => {
+        const info = pkgs[name];
+        return !info || !info.entry || !existsSync(info.entry);
+      });
+      if (broken.length) {
+        const sample = broken.slice(0, 8).join(", ");
+        return {
+          ok: false,
+          reason:
+            `${broken.length} manifest package(s) have no loadable source entry: ${sample}` +
+            (broken.length > 8 ? ` … (+${broken.length - 8} more)` : ""),
+          fix:
+            "see packages/preview-runtime/src/component-map.report.json `dropped[]` for the exact per-package " +
+            "`tried:` paths. This is a DS-side packaging issue (built-output-only package installed with " +
+            "--ignore-scripts, or no `src/index.*` / `source` field) — NOT a manifest.config.json fix. " +
+            "Record it in docs/setup-report.md and STOP; do not edit code.",
+        };
       }
       return { ok: true };
     },

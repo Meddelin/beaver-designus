@@ -278,17 +278,29 @@ Does three things in order:
 
 Expected:
 ```
-[preview:wire] wrote tsconfig.dev.json with N DS scope alias(es)
+[preview:wire] wrote tsconfig.dev.json + preview-aliases.json for N DS package(s)
 [preview:wire] wrote E entries across P package(s); dropped D; warnings: 0
 ```
 
-`dropped > 0` is fine — copy each entry from `packages/preview-runtime/src/component-map.report.json` into the setup-report's "Non-blocking deltas".
+It may also print `M DS package(s) have NO loadable source entry` followed by a
+package list. That means those packages ship built output only (their
+`package.json` `main`/`exports` points into a `dist/` that does not exist
+because `setup:ds` installs with `--ignore-scripts`) **or** they expose no
+`src/index.*` / `"source"` field. This is a **DS-side packaging fact, not a
+config error you can fix** — `preview:wire` drops them from `component-map.ts`
+on purpose so the dev server still boots. Copy the list (and each entry's
+`tried:` paths) from `packages/preview-runtime/src/component-map.report.json`
+into the setup-report's "Non-blocking deltas". Do **not** try to "fix" it by
+editing code, building the DS, or rewriting `manifest.config.json`.
+
+`dropped > 0` is otherwise fine — same: copy each entry from
+`component-map.report.json` into "Non-blocking deltas".
 
 `warnings > 0` with TS2307 → re-do §1.3 (config) and §1.4 (`setup:ds`).
 
 ### 1.8 `npm run preview:doctor`
 
-Preflight check. Runs six validations:
+Preflight check. Runs seven validations:
 
 | Check | Verifies | Fix on failure |
 |---|---|---|
@@ -297,9 +309,14 @@ Preflight check. Runs six validations:
 | `component-map-current` | `component-map.ts` newer than `index.json` | re-run §1.7 |
 | `ds-paths-exist` | every `source.localPath` resolves | re-do §1.2 |
 | `ds-deps-installed` | every DS has `node_modules` | re-run §1.4 |
+| `preview-entries-resolve` | every manifest package has a loadable source entry on disk | **not a code fix** — record dropped packages in the setup-report's "Non-blocking deltas" and continue; see §2 |
 | `typecheck-component-map` | `tsc -p tsconfig.dev.json` is clean | re-run §1.7 |
 
-Each failure prints the concrete command to fix it. Run the fix, re-run `npm run preview:doctor`, repeat until all six say `ok`.
+Each failure prints the concrete command (or instruction) to fix it. Run it,
+re-run `npm run preview:doctor`, repeat until all seven say `ok` — **except
+`preview-entries-resolve`**, which is informational: if the only remaining
+failure is dropped DS packages with no loadable entry, that is an accepted
+degraded state. Record it and proceed to §1.9.
 
 ### 1.9 `npm run dev`
 
@@ -386,6 +403,7 @@ Stop. Don't restart the dev server. Don't commit. Don't push.
 | `manifest:build` discovers 0 packages | `componentRoot` wrong | edit `manifest.config.json` `componentRoot` | edit `packages/manifest/src/scan/discovery.ts` |
 | `manifest:build` errors in Stage 4b | token grammar mismatch | edit `manifest.config.json` `tokenAxisGrammar.pattern` | edit `packages/manifest/src/tokens/extract.ts` |
 | `preview:wire` reports `TS2307` warnings | DS scope can't be resolved | re-run `setup:ds`, check `componentRoot` | edit `tsconfig.json` or `vite.config.ts` |
+| Vite overlay: **`Failed to resolve import "@scope/pkg" from "…/component-map.ts". Does the file exist?`** | the wired DS package ships built output only (`main`/`exports` → an unbuilt `dist/`) or has no `src/index.*` / `"source"` field — there is no loadable source to import | run `npm run preview:doctor`; copy its `preview-entries-resolve` output and the matching `dropped[].tried` entries from `component-map.report.json` into the setup-report "Non-blocking deltas"; if it blocks core components, set verdict ⚠️ and STOP | edit `component-map.ts`, `vite.config.ts`, `tsconfig.dev.json`, the DS `package.json`, or run a DS build — **this is a maintainer/DS-side fix, not yours** |
 | `preview:wire` drops many packages with `TS2305`/`TS2724` | manifest names exports the DS doesn't actually have at package root | list them in setup-report "Non-blocking deltas" | edit `component-map.ts` to delete imports |
 | Vite browser console "MIME type ''" | DS path not in fs.allow | confirm `source.localPath` exists; `vite.config.ts` auto-reads it | edit `vite.config.ts` |
 | Smoke test times out without tool-call event | Qwen fork hangs on confirm OR auth env var missing | fix `runtimes.config.json` `buildArgs` (auto-approve flag) OR set env var in shell | edit `daemon/runtimes/defs/qwen.ts` or `load-overrides.ts` |

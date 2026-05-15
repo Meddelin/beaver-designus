@@ -13,6 +13,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSy
 import { join, resolve, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { resolvePreviewEntry } from "./resolve-entry.ts";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, "..", "..", "..");
@@ -21,6 +22,15 @@ const REPORT_FILE = join(__dirname, "component-map.report.json");
 const INDEX_PATH = join(PROJECT_ROOT, "manifest-data", "index.json");
 const CONFIG_PATH = join(PROJECT_ROOT, "manifest.config.json");
 const TSCONFIG_DEV_PATH = join(PROJECT_ROOT, "tsconfig.dev.json");
+const PREVIEW_ALIASES_PATH = join(PROJECT_ROOT, "manifest-data", "preview-aliases.json");
+
+/** One scanned DS package: its real name (from package.json), absolute dir,
+ *  and the resolved runtime-loadable entry (null if none exists on disk). */
+interface ScannedPkg {
+  dir: string;
+  entry: string | null;
+  tried: string[];
+}
 
 interface ManifestEntryLite {
   id: string;
@@ -52,15 +62,23 @@ function run(): void {
     process.exit(2);
   }
 
-  // Step 0 — Before anything else, write tsconfig.dev.json with DS path
-  // aliases derived from manifest.config.json. Without this, every tsc
-  // check below would surface TS2307 (Cannot find module @ds/X) because
-  // DS packages live in .cache/<ds>/<componentRoot>/* — not in our root
-  // node_modules. The dev tsconfig extends the project tsconfig and adds
-  // <scope>/* → .cache/<ds>/<componentRoot>/* paths.
-  const writtenAliases = writeTsconfigDev();
+  // Step 0 — Scan every DS package on disk ONCE. For each we read the real
+  // `name` from its package.json and resolve a runtime-loadable source
+  // entry (resolve-entry.ts: source-first, never .d.ts, must exist). This
+  // single scan is the source of truth for BOTH tsconfig.dev.json paths
+  // and the Vite alias sidecar — no more reconstructing paths from a
+  // <scope>/<name> naming convention (which broke when a package's dir
+  // name diverged, or when `main` pointed at an unbuilt `dist/`).
+  const pkgMap = scanDsPackages();
+  const writtenAliases = writeTsconfigDev(pkgMap);
+  writePreviewAliases(pkgMap);
   if (writtenAliases.length) {
-    console.log(`[preview:wire] wrote tsconfig.dev.json with ${writtenAliases.length} DS scope alias(es)`);
+    console.log(`[preview:wire] wrote tsconfig.dev.json + preview-aliases.json for ${writtenAliases.length} DS package(s)`);
+  }
+  const unresolved = [...pkgMap.entries()].filter(([, v]) => !v.entry);
+  if (unresolved.length) {
+    console.log(`[preview:wire] ${unresolved.length} DS package(s) have NO loadable source entry — they will be dropped if referenced by the manifest:`);
+    for (const [name] of unresolved) console.log(`  · ${name}`);
   }
 
   const idx = JSON.parse(readFileSync(INDEX_PATH, "utf8"));
@@ -90,8 +108,29 @@ function run(): void {
   const warnings: string[] = [];
   const droppedPackages: DroppedPackage[] = [];
 
-  // First pass: write the full map.
-  emit(byPkg, []);
+  // Pre-emptive drop: a package referenced by the manifest but with no
+  // runtime-loadable entry on disk (or not found under any DS
+  // componentRoot) WILL fail Vite's import-analysis at dev time with the
+  // opaque "Failed to resolve import ... Does the file exist?" overlay.
+  // Catch it here as a structured, actionable report instead.
+  for (const pkg of [...byPkg.keys()]) {
+    const info = pkgMap.get(pkg);
+    if (info && info.entry) continue;
+    const comps = [...byPkg.get(pkg)!.values()].map((e) => e.id);
+    droppedPackages.push({
+      packageName: pkg,
+      reason: info
+        ? `no runtime-loadable source entry on disk. Tried (in order): ${info.tried
+            .map((p) => relative(PROJECT_ROOT, p).replace(/\\/g, "/"))
+            .join(" , ")}. The DS package likely ships built output only (main/exports → dist/) and was installed with --ignore-scripts so dist/ is absent, OR it has no src/index.* / "source" field. Fix on the DS side or add a "source" field; this is NOT a manifest.config.json error.`
+        : `package not found under any designSystems[].componentRoot in manifest.config.json. Either componentRoot is wrong or the package dir name differs from its package.json "name".`,
+      components: comps,
+    });
+    byPkg.delete(pkg);
+  }
+
+  // First pass: write the map (post pre-emptive drop).
+  emit(byPkg, droppedPackages);
 
   // Validate by running TS on just the generated file. We use the project's
   // tsconfig so module resolution mirrors the dev server.
@@ -273,27 +312,61 @@ function writeReport(report: object): void {
   writeFileSync(REPORT_FILE, JSON.stringify(report, null, 2) + "\n");
 }
 
-/* Derive scope→path aliases from manifest.config.json and write
- * tsconfig.dev.json that extends the project tsconfig. Returns the list
- * of aliases written so the caller can log it.
- *
- * For each DS in the config:
- *  - Look at <dsRoot>/<componentRoot>/<first-pkg>/package.json
- *  - Extract `name` (e.g. "@tui-react/button") → scope "@tui-react"
- *  - Emit `<scope>/*` → `<dsRoot>/<componentRoot>/*`
- *
- * This handles the common case where package basename matches the
- * second segment of the package name. DSes with name/basename
- * divergence need explicit per-package paths — left as a follow-up.
- */
-function writeTsconfigDev(): string[] {
-  if (!existsSync(CONFIG_PATH)) return [];
-  const cfg = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+/* Scan EVERY package under every DS componentRoot. For each: read the
+ * real `name` from its package.json (authoritative — not a guess) and
+ * resolve a runtime-loadable source entry. This covers all packages, not
+ * just those in the manifest, because DS-internal cross-package imports
+ * (e.g. @beaver-ui/button importing @beaver-ui/box) must also resolve. */
+function scanDsPackages(): Map<string, ScannedPkg> {
+  const map = new Map<string, ScannedPkg>();
+  if (!existsSync(CONFIG_PATH)) return map;
+  let cfg: any;
+  try {
+    cfg = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+  } catch {
+    return map;
+  }
+  for (const ds of cfg.designSystems ?? []) {
+    const localPath = ds?.source?.localPath;
+    const componentRoot = ds?.componentRoot;
+    if (!localPath || !componentRoot) continue;
+    const dsRoot = resolve(PROJECT_ROOT, localPath);
+    const pkgsDir = resolve(dsRoot, componentRoot);
+    if (!existsSync(pkgsDir)) continue;
+    for (const dir of readdirSync(pkgsDir)) {
+      const pkgDir = join(pkgsDir, dir);
+      let st;
+      try {
+        st = statSync(pkgDir);
+      } catch {
+        continue;
+      }
+      if (!st.isDirectory()) continue;
+      const pjPath = join(pkgDir, "package.json");
+      if (!existsSync(pjPath)) continue;
+      let pj: any;
+      try {
+        pj = JSON.parse(readFileSync(pjPath, "utf8"));
+      } catch {
+        continue;
+      }
+      if (typeof pj.name !== "string" || !pj.name) continue;
+      const { entry, tried } = resolvePreviewEntry(pkgDir, pj);
+      map.set(pj.name, { dir: pkgDir, entry, tried });
+    }
+  }
+  return map;
+}
 
+/* Write tsconfig.dev.json with PRECISE per-package path mappings derived
+ * from the on-disk scan (no <scope>/<name> reconstruction). For each
+ * package with a resolved entry:
+ *   "@beaver-ui/action-bar"   → ["./<rel path to resolved entry file>"]
+ *   "@beaver-ui/action-bar/*" → ["./<rel path to package dir>/*"]
+ * Returns the list of bare-name aliases written (for the log line). */
+function writeTsconfigDev(pkgMap: Map<string, ScannedPkg>): string[] {
   // Preserve the project's base paths. The dev config's `paths` REPLACES
-  // the parent's, so we read base paths from the main tsconfig and
-  // concatenate. Use a tolerant JSONC-style strip-comments parse —
-  // typical tsconfig.json has no comments in this repo, but be safe.
+  // the parent's, so we read base paths from the main tsconfig and merge.
   let basePaths: Record<string, string[]> = {};
   const tsRoot = join(PROJECT_ROOT, "tsconfig.json");
   if (existsSync(tsRoot)) {
@@ -306,45 +379,22 @@ function writeTsconfigDev(): string[] {
     }
   }
 
+  const rel = (p: string) => `./${relative(PROJECT_ROOT, p).replace(/\\/g, "/")}`;
   const dsPaths: Record<string, string[]> = {};
   const writtenAliases: string[] = [];
 
-  for (const ds of cfg.designSystems ?? []) {
-    const localPath = ds?.source?.localPath;
-    const componentRoot = ds?.componentRoot;
-    if (!localPath || !componentRoot) continue;
-    const dsRoot = resolve(PROJECT_ROOT, localPath);
-    const pkgsDir = resolve(dsRoot, componentRoot);
-    if (!existsSync(pkgsDir)) continue;
-
-    // Find the first package and read its scope.
-    let scope: string | null = null;
-    for (const dir of readdirSync(pkgsDir)) {
-      const pjPath = join(pkgsDir, dir, "package.json");
-      if (!existsSync(pjPath)) continue;
-      try {
-        const pj = JSON.parse(readFileSync(pjPath, "utf8"));
-        if (typeof pj.name === "string" && pj.name.startsWith("@") && pj.name.includes("/")) {
-          scope = pj.name.split("/")[0];
-          break;
-        }
-      } catch {}
+  for (const [name, info] of pkgMap) {
+    // Deep-import alias always maps to the package dir.
+    dsPaths[`${name}/*`] = [`${rel(info.dir)}/*`];
+    if (info.entry) {
+      dsPaths[name] = [rel(info.entry)];
+      writtenAliases.push(`${name} → ${rel(info.entry)}`);
     }
-    if (!scope) continue;
-
-    // Build the path mapping (relative to PROJECT_ROOT for tsconfig).
-    const relRoot = relative(PROJECT_ROOT, pkgsDir).replace(/\\/g, "/");
-    const alias = `${scope}/*`;
-    dsPaths[alias] = [`./${relRoot}/*`];
-    writtenAliases.push(`${alias} → ./${relRoot}/*`);
   }
 
-  // If the operator passes peerless DSes (no scope or empty pkgsDir), we
-  // still emit a tsconfig.dev.json that just inherits base paths — keeps
-  // the downstream `tsc -p tsconfig.dev.json` working without surprises.
   const merged = { ...basePaths, ...dsPaths };
   const out = {
-    $comment: "Auto-generated by `npm run preview:wire`. Refreshes every run. Don't hand-edit; rerun the generator to regenerate.",
+    $comment: "Auto-generated by `npm run preview:wire`. Precise per-package paths from the on-disk DS scan. Refreshes every run. Don't hand-edit; rerun the generator.",
     extends: "./tsconfig.json",
     compilerOptions: {
       paths: merged,
@@ -352,6 +402,33 @@ function writeTsconfigDev(): string[] {
   };
   writeFileSync(TSCONFIG_DEV_PATH, JSON.stringify(out, null, 2) + "\n");
   return writtenAliases;
+}
+
+/* Write manifest-data/preview-aliases.json — the single source of truth
+ * web/vite.config.ts consumes to alias DS imports at dev time. Mirrors
+ * the tsconfig.dev.json paths but with ABSOLUTE paths (Vite resolves
+ * from arbitrary importers) and includes unresolved packages too so
+ * `npm run preview:doctor` can report them. Lives under manifest-data/
+ * (gitignored) — regenerated every wire, never committed. */
+function writePreviewAliases(pkgMap: Map<string, ScannedPkg>): void {
+  const packages: Record<string, { entry: string | null; dir: string }> = {};
+  for (const [name, info] of pkgMap) {
+    packages[name] = {
+      entry: info.entry ? info.entry.replace(/\\/g, "/") : null,
+      dir: info.dir.replace(/\\/g, "/"),
+    };
+  }
+  const out = {
+    $comment:
+      "AUTO-GENERATED by `npm run preview:wire`. Consumed by web/vite.config.ts. " +
+      "`entry` is the exact on-disk runtime-loadable source file (null = package has no loadable entry; " +
+      "preview:doctor flags it). `dir` backs deep-import aliases. Absolute, machine-specific, gitignored, " +
+      "regenerated every run — never hand-edit or commit.",
+    generatedAt: new Date().toISOString(),
+    packages,
+  };
+  mkdirSync(dirname(PREVIEW_ALIASES_PATH), { recursive: true });
+  writeFileSync(PREVIEW_ALIASES_PATH, JSON.stringify(out, null, 2) + "\n");
 }
 
 /* Convert "@tui-react/checkbox" → "TuiReactCheckbox".  "@beaver-ui/button" → "BeaverUiButton". */

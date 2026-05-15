@@ -46,45 +46,35 @@ function readDsPackageNames(): string[] {
   }
 }
 
-/* Derive scope→path aliases mirroring what `npm run preview:wire` writes
- * into tsconfig.dev.json. Returns an alias array suitable for Vite's
- * resolve.alias config. We compute it here directly (rather than read
- * tsconfig.dev.json) so the dev server works even before the first
- * preview:wire run — same source of truth (manifest.config.json) avoids
- * drift. */
+/* Read manifest-data/preview-aliases.json — the single source of truth
+ * written by `npm run preview:wire` from a real on-disk DS scan. For each
+ * package we emit TWO anchored-regex aliases:
+ *   ^@scope/pkg$       → <exact resolved source entry file>
+ *   ^@scope/pkg/(.*)$  → <package dir>/$1   (deep imports)
+ * Anchored regex (not Vite's prefix-matching string alias) so
+ * "@beaver-ui/button" never accidentally swallows "@beaver-ui/button-group",
+ * and so the bare specifier maps to the precise entry FILE rather than a
+ * directory whose package.json `main` points at an unbuilt dist/.
+ *
+ * If the sidecar is absent we intentionally return [] (no guessing): the
+ * operator must run `npm run preview:wire` first — `npm run preview:doctor`
+ * says so explicitly. A wrong alias is worse than a missing one. */
 function readDsScopeAliases(): Array<{ find: RegExp; replacement: string }> {
-  const cfgPath = resolve(PROJECT_ROOT, "manifest.config.json");
-  if (!existsSync(cfgPath)) return [];
+  const sidecar = resolve(PROJECT_ROOT, "manifest-data", "preview-aliases.json");
+  if (!existsSync(sidecar)) return [];
   const aliases: Array<{ find: RegExp; replacement: string }> = [];
   try {
-    const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
-    for (const ds of cfg.designSystems ?? []) {
-      const localPath: string | undefined = ds?.source?.localPath;
-      const componentRoot: string | undefined = ds?.componentRoot;
-      if (!localPath || !componentRoot) continue;
-      const dsRoot = resolve(PROJECT_ROOT, localPath);
-      const pkgsDir = resolve(dsRoot, componentRoot);
-      const fs = require("node:fs") as typeof import("node:fs");
-      if (!fs.existsSync(pkgsDir)) continue;
-      // Find one package, extract its scope from package.json `name`.
-      for (const dir of fs.readdirSync(pkgsDir)) {
-        const pjPath = resolve(pkgsDir, dir, "package.json");
-        if (!fs.existsSync(pjPath)) continue;
-        try {
-          const pj = JSON.parse(fs.readFileSync(pjPath, "utf8"));
-          if (typeof pj.name === "string" && pj.name.startsWith("@") && pj.name.includes("/")) {
-            const scope = pj.name.split("/")[0];
-            // Vite's resolve.alias accepts a regex `find`. We match
-            // `<scope>/<rest>` and rewrite to `<absPkgsDir>/<rest>`.
-            // Escape regex meta in the scope (only @ and - are common).
-            const escaped = scope.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-            aliases.push({
-              find: new RegExp(`^${escaped}/(.+)`),
-              replacement: `${pkgsDir.replace(/\\/g, "/")}/$1`,
-            });
-            break;
-          }
-        } catch {}
+    const j = JSON.parse(readFileSync(sidecar, "utf8"));
+    const pkgs: Record<string, { entry: string | null; dir: string }> = j.packages ?? {};
+    for (const [name, info] of Object.entries(pkgs)) {
+      const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      // Exact-match alias first (Vite resolves alias array in order).
+      if (info.entry) {
+        aliases.push({ find: new RegExp(`^${esc}$`), replacement: info.entry });
+      }
+      // Deep-import alias → package dir.
+      if (info.dir) {
+        aliases.push({ find: new RegExp(`^${esc}/(.*)$`), replacement: `${info.dir}/$1` });
       }
     }
   } catch {}
