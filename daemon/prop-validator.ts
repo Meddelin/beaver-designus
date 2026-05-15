@@ -6,7 +6,63 @@
 // Exported as a standalone module so it can be unit-tested without the HTTP
 // surface (and reused if/when a setProp-equivalent grows elsewhere).
 
-import type { JsonValue, ManifestEntry, PropEntry } from "../shared/types.ts";
+import type { JsonValue, ManifestEntry, PropEntry, PropShape } from "../shared/types.ts";
+
+/* Lenient structural check against the P1 PropShape. Deliberately permissive:
+ * it only catches a *category* mismatch (a string where an array/object is
+ * required, etc.) so realistic story args and generic-degraded shapes pass.
+ * Extra object keys are allowed, optional/missing fields ignored, and
+ * function / react-node / ref / unknown / record always pass. This runs
+ * only where `kind` is too coarse to judge (kind.type === "unsupported").
+ */
+export function checkShape(
+  shape: PropShape | undefined,
+  v: JsonValue,
+  depth = 0
+): { ok: true } | { ok: false; error: string } {
+  if (!shape || depth > 5) return { ok: true };
+  switch (shape.t) {
+    case "string":
+      return typeof v === "string" ? { ok: true } : { ok: false, error: `expected string, got ${typeofJson(v)}` };
+    case "number":
+      return typeof v === "number" ? { ok: true } : { ok: false, error: `expected number, got ${typeofJson(v)}` };
+    case "boolean":
+      return typeof v === "boolean" ? { ok: true } : { ok: false, error: `expected boolean, got ${typeofJson(v)}` };
+    case "literal":
+      return v === shape.value ? { ok: true } : { ok: false, error: `expected ${JSON.stringify(shape.value)}` };
+    case "enum":
+      return shape.options.some((o) => o === v)
+        ? { ok: true }
+        : { ok: false, error: `not in [${shape.options.map((o) => JSON.stringify(o)).join(", ")}]` };
+    case "array":
+    case "tuple": {
+      if (!Array.isArray(v)) return { ok: false, error: `expected array, got ${typeofJson(v)}` };
+      // Validate the first element only — enough to catch a wrong-shape
+      // dataset without rejecting large realistic ones or T-degraded elems.
+      if (shape.t === "array" && v.length > 0) return checkShape(shape.element, v[0], depth + 1);
+      return { ok: true };
+    }
+    case "object":
+      if (v === null || typeof v !== "object" || Array.isArray(v)) {
+        return { ok: false, error: `expected object, got ${typeofJson(v)}` };
+      }
+      return { ok: true }; // shallow — don't over-enforce nested required fields
+    case "union": {
+      for (const variant of shape.variants) {
+        if (checkShape(variant, v, depth + 1).ok) return { ok: true };
+      }
+      return { ok: false, error: "no union variant matched" };
+    }
+    default:
+      return { ok: true }; // record | function | react-node | ref | unknown
+  }
+}
+
+function typeofJson(v: JsonValue): string {
+  if (v === null) return "null";
+  if (Array.isArray(v)) return "array";
+  return typeof v;
+}
 
 export type TokensManifest = {
   groups?: Record<string, { variants: Array<{ name: string }> }>;
@@ -98,5 +154,7 @@ export function checkKind(
       error: `value ${JSON.stringify(v)} not in token group ${k.group} variants [${group.variants.map((vt) => vt.name).join(", ")}]`,
     };
   }
-  return { ok: true };
+  // k.type === "unsupported": `kind` can't judge object/array props — defer
+  // to the (lenient) structural shape check when P1 gave us one.
+  return checkShape(prop.shape, v);
 }

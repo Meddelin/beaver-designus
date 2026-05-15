@@ -119,6 +119,44 @@ export function buildGetComponentSchema(): object {
   };
 }
 
+/** Example-first entry point: same id enum as getComponent. */
+export function buildGetComponentUsageSchema(): object {
+  const { entries } = loadManifest();
+  return {
+    type: "object",
+    required: ["id"],
+    properties: {
+      id: { type: "string", enum: entries.map((e) => e.id) },
+    },
+    additionalProperties: false,
+  };
+}
+
+/** Drop a whole canonical subtree (a PrototypeSeed — typically the `tree`
+ *  from getComponentUsage, optionally tweaked) under a parent in one call. */
+export function buildInsertSubtreeSchema(): object {
+  return {
+    type: "object",
+    required: ["parentNodeId", "tree"],
+    properties: {
+      parentNodeId: {
+        type: ["string", "null"],
+        description: "nodeId of the parent. Pass null to set the prototype root (only valid if root is currently null).",
+      },
+      slot: { type: "string", description: "Named slot on the parent (only when the parent declares named-slots)." },
+      beforeNodeId: { type: "string", description: "Insert before this sibling nodeId; otherwise append." },
+      tree: {
+        type: "object",
+        description:
+          "A PrototypeSeed: { component: <manifest id>, props: {…}, children?: PrototypeSeed[], slots?: { <name>: PrototypeSeed[] } }. " +
+          "Every `component` must be a manifest id. Start from getComponentUsage(id).tree and adapt its props.",
+        additionalProperties: true,
+      },
+    },
+    additionalProperties: false,
+  };
+}
+
 /**
  * Compact summary the composer prompt embeds. One row per entry; <1 line each
  * so we stay inside the context budget.
@@ -127,8 +165,11 @@ export function manifestSummaryForPrompt(): string {
   const { entries } = loadManifest();
   return entries
     .map((e) => {
-      const propNames = e.props.map((p) => p.name).join(",");
-      return `- ${e.id}  [${e.category}/${e.sourceSystem}]  props:[${propNames}]  — ${e.description}`;
+      const req = e.props.filter((p) => p.required).map((p) => p.name);
+      const reqStr = req.length ? ` req:[${req.join(",")}]` : "";
+      // ✓usage = a canonical example exists — fetch it before composing.
+      const usageMark = e.usage ? " ✓usage" : "";
+      return `- ${e.id}  [${e.category}/${e.sourceSystem}]${reqStr}${usageMark}  — ${e.description}`;
     })
     .join("\n");
 }

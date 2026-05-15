@@ -14,6 +14,8 @@ import {
   buildRemoveNodeSchema,
   buildFinishPrototypeSchema,
   buildGetComponentSchema,
+  buildGetComponentUsageSchema,
+  buildInsertSubtreeSchema,
 } from "./manifest-server.ts";
 
 const DAEMON_URL = process.env.BEAVER_DESIGNUS_DAEMON_URL ?? "http://127.0.0.1:7457";
@@ -71,8 +73,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "getComponent",
-        description: "Fetch the full manifest entry for one component id (props, slot policy, description). Use before placeComponent when you need to know which props are valid.",
+        description: "Fetch the full manifest entry for one component id (props with recursive `shape`, slot policy, description). Use when you need exact prop shapes.",
         inputSchema: buildGetComponentSchema(),
+      },
+      {
+        name: "getComponentUsage",
+        description:
+          "EXAMPLE-FIRST: for any component with required props or a ✓usage marker, call this FIRST. Returns a canonical, ready-to-use PrototypeSeed `tree` (derived from the design system's own Storybook/MDX, with realistic prop values) plus the required-prop shapes. Then call insertSubtree with that tree (adapt the props to the user's intent) instead of guessing placeComponent props.",
+        inputSchema: buildGetComponentUsageSchema(),
+      },
+      {
+        name: "insertSubtree",
+        description:
+          "Instantiate a whole PrototypeSeed (typically getComponentUsage(id).tree, optionally tweaked) under a parent in ONE call — nodeIds are assigned and every node's props are validated. Use this for complex/data-driven components instead of placeComponent + many setProp calls.",
+        inputSchema: buildInsertSubtreeSchema(),
       },
     ],
   };

@@ -26,6 +26,8 @@ const ALLOWED_TOOLS = [
   "mcp__beaver_designus__removeNode",
   "mcp__beaver_designus__finishPrototype",
   "mcp__beaver_designus__getComponent",
+  "mcp__beaver_designus__getComponentUsage",
+  "mcp__beaver_designus__insertSubtree",
 ];
 
 export interface RunTurnArgs {

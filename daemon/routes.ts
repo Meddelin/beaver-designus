@@ -23,7 +23,7 @@ import { setupSse } from "./sse.ts";
 import { loadManifest } from "./manifest-server.ts";
 import { runTurn } from "./agent-loop.ts";
 import { ulid } from "ulid";
-import type { JsonValue, PrototypeNode } from "../shared/types.ts";
+import type { JsonValue, PrototypeNode, PrototypeSeed } from "../shared/types.ts";
 import { log } from "./log.ts";
 import { validateProps, checkKind } from "./prop-validator.ts";
 
@@ -239,53 +239,37 @@ function applyToolCall(
   const { byId } = loadManifest();
 
   if (toolName === "placeComponent") {
-    const componentId: string = input.component;
-    const entry = byId.get(componentId);
-    if (!entry) return { ok: false, error: `unknown component: ${componentId}` };
+    const r = placeNode(proto, byId, input.component, (input.props ?? {}) as Record<string, JsonValue>, input.parentNodeId ?? null, input.slot);
+    if (!r.ok) return r;
+    return { ok: true, output: { nodeId: r.nodeId, revision: proto.revision + 1 } };
+  }
 
-    const validated = validateProps(entry, (input.props ?? {}) as Record<string, JsonValue>, loadManifest().tokens);
-    if (!validated.ok) return { ok: false, error: validated.error };
-    if (validated.rejected.length) {
-      log.warn({ component: componentId, rejected: validated.rejected }, "placeComponent: rejected props (kept node)");
-    }
-
-    const node: PrototypeNode = {
-      nodeId: ulid(),
-      component: componentId,
-      props: validated.props,
+  if (toolName === "getComponentUsage") {
+    const entry = byId.get(input.id);
+    if (!entry) return { ok: false, error: `unknown id: ${input.id}` };
+    return {
+      ok: true,
+      output: {
+        id: entry.id,
+        description: entry.description,
+        slots: entry.slots,
+        usage: entry.usage ?? null,
+        requiredProps: entry.props
+          .filter((p) => p.required)
+          .map((p) => ({ name: p.name, shape: p.shape ?? null, description: p.description })),
+        optionalProps: entry.props.filter((p) => !p.required).map((p) => p.name),
+      },
     };
+  }
 
-    if (input.parentNodeId === null || input.parentNodeId === undefined) {
-      if (proto.root !== null) return { ok: false, error: "root already exists; pass an existing parentNodeId" };
-      proto.root = node;
-      return { ok: true, output: { nodeId: node.nodeId, revision: proto.revision + 1 } };
+  if (toolName === "insertSubtree") {
+    const tree = input.tree as PrototypeSeed | undefined;
+    if (!tree || typeof tree.component !== "string") {
+      return { ok: false, error: "insertSubtree: `tree.component` (a manifest id) is required" };
     }
-
-    const parent = findNode(proto.root, input.parentNodeId);
-    if (!parent) return { ok: false, error: `parent not found: ${input.parentNodeId}` };
-
-    const parentEntry = byId.get(parent.component);
-    if (!parentEntry) return { ok: false, error: `manifest entry missing for parent: ${parent.component}` };
-
-    const slot: string | undefined = input.slot;
-    if (parentEntry.slots.kind === "named-slots") {
-      if (!slot || !parentEntry.slots.slots[slot]) {
-        return { ok: false, error: `parent ${parent.component} requires a named slot; valid: ${Object.keys(parentEntry.slots.slots).join(",")}` };
-      }
-      parent.slots ??= {};
-      parent.slots[slot] ??= [];
-      parent.slots[slot].push(node);
-    } else if (parentEntry.slots.kind === "components") {
-      if (parentEntry.slots.allowedComponents && !parentEntry.slots.allowedComponents.includes(componentId)) {
-        return { ok: false, error: `parent ${parent.component} does not accept ${componentId} as a child` };
-      }
-      parent.children ??= [];
-      parent.children.push(node);
-    } else {
-      return { ok: false, error: `parent ${parent.component} cannot host children (slots.kind=${parentEntry.slots.kind})` };
-    }
-
-    return { ok: true, output: { nodeId: node.nodeId, revision: proto.revision + 1 } };
+    const r = insertSeed(proto, byId, tree, input.parentNodeId ?? null, input.slot);
+    if (!r.ok) return r;
+    return { ok: true, output: { rootNodeId: r.nodeId, revision: proto.revision + 1 } };
   }
 
   if (toolName === "setProp") {
@@ -323,5 +307,86 @@ function applyToolCall(
   }
 
   return { ok: false, error: `unknown tool: ${toolName}` };
+}
+
+type ManifestById = ReturnType<typeof loadManifest>["byId"];
+
+/* Single placement primitive — shared by placeComponent and (recursively)
+ * insertSeed. Validates props against the manifest entry, assigns a nodeId,
+ * and attaches to the parent honouring its slot policy. */
+function placeNode(
+  proto: { revision: number; root: PrototypeNode | null },
+  byId: ManifestById,
+  componentId: string,
+  propsIn: Record<string, JsonValue>,
+  parentNodeId: string | null,
+  slot: string | undefined
+): { ok: true; nodeId: string } | { ok: false; error: string } {
+  const entry = byId.get(componentId);
+  if (!entry) return { ok: false, error: `unknown component: ${componentId}` };
+
+  const validated = validateProps(entry, propsIn, loadManifest().tokens);
+  if (!validated.ok) return { ok: false, error: validated.error };
+  if (validated.rejected.length) {
+    log.warn({ component: componentId, rejected: validated.rejected }, "placeNode: rejected props (kept node)");
+  }
+
+  const node: PrototypeNode = { nodeId: ulid(), component: componentId, props: validated.props };
+
+  if (parentNodeId === null) {
+    if (proto.root !== null) return { ok: false, error: "root already exists; pass an existing parentNodeId" };
+    proto.root = node;
+    return { ok: true, nodeId: node.nodeId };
+  }
+
+  const parent = findNode(proto.root, parentNodeId);
+  if (!parent) return { ok: false, error: `parent not found: ${parentNodeId}` };
+  const parentEntry = byId.get(parent.component);
+  if (!parentEntry) return { ok: false, error: `manifest entry missing for parent: ${parent.component}` };
+
+  if (parentEntry.slots.kind === "named-slots") {
+    if (!slot || !parentEntry.slots.slots[slot]) {
+      return { ok: false, error: `parent ${parent.component} requires a named slot; valid: ${Object.keys(parentEntry.slots.slots).join(",")}` };
+    }
+    parent.slots ??= {};
+    parent.slots[slot] ??= [];
+    parent.slots[slot].push(node);
+  } else if (parentEntry.slots.kind === "components") {
+    if (parentEntry.slots.allowedComponents && !parentEntry.slots.allowedComponents.includes(componentId)) {
+      return { ok: false, error: `parent ${parent.component} does not accept ${componentId} as a child` };
+    }
+    parent.children ??= [];
+    parent.children.push(node);
+  } else {
+    return { ok: false, error: `parent ${parent.component} cannot host children (slots.kind=${parentEntry.slots.kind})` };
+  }
+  return { ok: true, nodeId: node.nodeId };
+}
+
+/* Recursively instantiate a PrototypeSeed. Fails fast on the first invalid
+ * node so a half-tree never silently lands. */
+function insertSeed(
+  proto: { revision: number; root: PrototypeNode | null },
+  byId: ManifestById,
+  seed: PrototypeSeed,
+  parentNodeId: string | null,
+  slot: string | undefined
+): { ok: true; nodeId: string } | { ok: false; error: string } {
+  if (!seed || typeof seed.component !== "string") {
+    return { ok: false, error: "seed node missing `component` (manifest id)" };
+  }
+  const placed = placeNode(proto, byId, seed.component, seed.props ?? {}, parentNodeId, slot);
+  if (!placed.ok) return placed;
+  for (const child of seed.children ?? []) {
+    const r = insertSeed(proto, byId, child, placed.nodeId, undefined);
+    if (!r.ok) return r;
+  }
+  for (const [slotName, slotSeeds] of Object.entries(seed.slots ?? {})) {
+    for (const ss of slotSeeds) {
+      const r = insertSeed(proto, byId, ss, placed.nodeId, slotName);
+      if (!r.ok) return r;
+    }
+  }
+  return { ok: true, nodeId: placed.nodeId };
 }
 

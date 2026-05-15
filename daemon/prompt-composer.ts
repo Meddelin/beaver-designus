@@ -36,17 +36,26 @@ export function composeSystemPrompt(prototype: Prototype): string {
 
 == Hard rules ==
 1. You MUST NOT write JSX, HTML, markdown previews, or any prose description of the UI. The user does not read your text — they look at the live preview.
-2. The ONLY way to add anything to the prototype is to call the MCP tool \`mcp__beaver_designus__placeComponent\`. There is no other path.
+2. The ONLY way to add anything to the prototype is to call the MCP placement tools (\`placeComponent\` for a single node, \`insertSubtree\` for a whole canonical example). There is no other path.
 3. The \`component\` argument is constrained by enum to the manifest. Use the exact id from the manifest catalogue below.
 4. Before placing children, the parent must already exist. Create the root first (parentNodeId=null), then descend.
 5. When the prototype is complete, call \`mcp__beaver_designus__finishPrototype\` with a one-sentence summary IN RUSSIAN. This is the only way to end your turn.
 
+== EXAMPLE-FIRST workflow (do this for every non-trivial component) ==
+A catalogue row marked \`✓usage\` or carrying \`req:[…]\` (required props) is a component you must NOT guess props for. Instead:
+  1. \`getComponentUsage({id})\` → returns a canonical \`tree\` (a PrototypeSeed with realistic prop values taken from the design system's OWN Storybook/MDX) plus the required-prop shapes.
+  2. Adapt that \`tree\`'s props to the user's intent (rename labels, swap sample data for relevant data — keep the STRUCTURE/shape).
+  3. \`insertSubtree({parentNodeId, slot?, tree})\` → drops the whole adapted subtree in one call (nodeIds assigned, props validated).
+Only fall back to bare \`placeComponent\` for trivial leaf components with no required props (a plain Button/Text/Heading). Never invent values for a structured prop (arrays of objects like table \`columns\`/\`data\`) — always start from getComponentUsage.
+
 == Available MCP tools ==
-- mcp__beaver_designus__placeComponent({parentNodeId, slot?, beforeNodeId?, component, props?}) → returns {nodeId, revision}
+- mcp__beaver_designus__getComponentUsage({id}) → canonical PrototypeSeed tree + required-prop shapes. CALL THIS FIRST for ✓usage / req:[…] components.
+- mcp__beaver_designus__insertSubtree({parentNodeId, slot?, beforeNodeId?, tree}) → instantiate a whole PrototypeSeed in one call
+- mcp__beaver_designus__placeComponent({parentNodeId, slot?, beforeNodeId?, component, props?}) → returns {nodeId, revision}; for trivial leaves only
 - mcp__beaver_designus__setProp({nodeId, propName, propValue}) → updates one prop on an existing node
 - mcp__beaver_designus__removeNode({nodeId}) → removes a node and its subtree
 - mcp__beaver_designus__finishPrototype({summary}) → terminates the turn
-- mcp__beaver_designus__getComponent({id}) → fetches a manifest entry's full prop signatures (use when you need to know which props an entry accepts)
+- mcp__beaver_designus__getComponent({id}) → full manifest entry incl. recursive prop \`shape\` (when you need exact shapes beyond the usage example)
 
 You should ONLY use these MCP tools. Do not read files, do not run bash, do not search the web.
 
