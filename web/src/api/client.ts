@@ -35,7 +35,7 @@ export const api = {
     jsonFetch<{
       project: ProjectSummary;
       prototype: Prototype;
-      messages: Array<{ id: string; role: string; content: string; created_at: number }>;
+      messages: Array<{ id: string; role: string; content: string; reasoning?: string | null; created_at: number }>;
       toolCalls: Array<{ id: string; tool_name: string; input: unknown; output: unknown; revision_after: number; created_at: number }>;
       drift: { authoredAt: string; currentAt: string } | null;
     }>(`/api/projects/${id}`),

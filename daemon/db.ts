@@ -49,3 +49,14 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   created_at      INTEGER NOT NULL
 );
 `);
+
+/* Idempotent migration: assistant messages can carry the model's reasoning
+ * (extended-thinking) text so it rehydrates on reload. `CREATE TABLE IF NOT
+ * EXISTS` won't add a column to an existing table, so add it explicitly
+ * when absent. */
+const messageCols = (db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>).map(
+  (c) => c.name
+);
+if (!messageCols.includes("reasoning")) {
+  db.exec("ALTER TABLE messages ADD COLUMN reasoning TEXT");
+}

@@ -17,8 +17,16 @@ export interface JsonStreamHandler {
   finalize(): void;
 }
 
-export function createClaudeStreamHandler(session: Session, addText: (t: string) => void): JsonStreamHandler {
+export function createClaudeStreamHandler(
+  session: Session,
+  addText: (t: string) => void,
+  addReasoning: (t: string) => void
+): JsonStreamHandler {
   let buf = "";
+  // Partial deltas (content_block_delta) re-arrive as a final `assistant`
+  // block. Track what we streamed so the final block is still persisted
+  // (addText/addReasoning) without re-broadcasting a duplicate to the UI.
+  const seen = { textDelta: false, thinkingDelta: false };
   return {
     onChunk(chunk: string) {
       buf += chunk;
@@ -27,17 +35,23 @@ export function createClaudeStreamHandler(session: Session, addText: (t: string)
         const line = buf.slice(0, nl).trim();
         buf = buf.slice(nl + 1);
         if (!line) continue;
-        dispatchLine(line, session, addText);
+        dispatchLine(line, session, addText, addReasoning, seen);
       }
     },
     finalize() {
-      if (buf.trim()) dispatchLine(buf.trim(), session, addText);
+      if (buf.trim()) dispatchLine(buf.trim(), session, addText, addReasoning, seen);
       buf = "";
     },
   };
 }
 
-function dispatchLine(line: string, session: Session, addText: (t: string) => void): void {
+function dispatchLine(
+  line: string,
+  session: Session,
+  addText: (t: string) => void,
+  addReasoning: (t: string) => void,
+  seen: { textDelta: boolean; thinkingDelta: boolean }
+): void {
   let evt: any;
   try {
     evt = JSON.parse(line);
@@ -46,31 +60,41 @@ function dispatchLine(line: string, session: Session, addText: (t: string) => vo
     return;
   }
 
-  if (evt.type === "assistant" && evt.message?.content) {
-    for (const part of evt.message.content) {
-      if (part.type === "text" && typeof part.text === "string") {
-        addText(part.text);
-        broadcast(session.id, { type: "status", phase: "agent-text", data: { text: part.text } });
-      } else if (part.type === "tool_use") {
-        broadcast(session.id, {
-          type: "status",
-          phase: "tool-call",
-          data: { name: part.name, input: part.input, id: part.id },
-        });
-      }
+  // Live partial streaming (`--include-partial-messages`):
+  //   {type:"stream_event", event:{type:"content_block_delta",
+  //     delta:{type:"text_delta",text} | {type:"thinking_delta",thinking}}}
+  if (evt.type === "stream_event" && evt.event?.type === "content_block_delta") {
+    const d = evt.event.delta ?? {};
+    if (d.type === "text_delta" && typeof d.text === "string" && d.text) {
+      seen.textDelta = true;
+      addText(d.text);
+      broadcast(session.id, { type: "status", phase: "agent-text", data: { text: d.text } });
+    } else if (d.type === "thinking_delta" && typeof d.thinking === "string" && d.thinking) {
+      seen.thinkingDelta = true;
+      addReasoning(d.thinking);
+      broadcast(session.id, { type: "status", phase: "agent-thinking", data: { text: d.thinking } });
     }
     return;
   }
 
-  if (evt.type === "user" && evt.message?.content) {
+  if (evt.type === "assistant" && evt.message?.content) {
     for (const part of evt.message.content) {
-      if (part.type === "tool_result") {
-        broadcast(session.id, {
-          type: "status",
-          phase: "tool-call",
-          data: { result: part.content, tool_use_id: part.tool_use_id, is_error: part.is_error ?? false },
-        });
+      if (part.type === "text" && typeof part.text === "string") {
+        if (!seen.textDelta) {
+          addText(part.text);
+          broadcast(session.id, { type: "status", phase: "agent-text", data: { text: part.text } });
+        }
+      } else if (part.type === "thinking" && typeof part.thinking === "string") {
+        if (!seen.thinkingDelta) {
+          addReasoning(part.thinking);
+          broadcast(session.id, { type: "status", phase: "agent-thinking", data: { text: part.thinking } });
+        }
+      } else if (part.type === "redacted_thinking") {
+        broadcast(session.id, { type: "status", phase: "agent-thinking", data: { text: "[reasoning redacted]" } });
       }
+      // tool_use is intentionally NOT broadcast here — the tool-call
+      // timeline is driven uniformly by /internal/tool-call (fires for
+      // every stream format incl. plain, and carries the real result).
     }
     return;
   }

@@ -140,12 +140,14 @@ export async function runTurn({ session, userMessage, runtimeId }: RunTurnArgs):
   }
 
   let assistantText = "";
+  let reasoningText = "";
   const addText = (t: string) => { assistantText += t; };
+  const addReasoning = (t: string) => { reasoningText += t; };
 
   const handler =
     detected.def.streamFormat === "claude-stream-json"
-      ? createClaudeStreamHandler(session, addText)
-      : createPlainStreamHandler(session, addText);
+      ? createClaudeStreamHandler(session, addText, addReasoning)
+      : createPlainStreamHandler(session, addText, addReasoning);
 
   child.stdout?.on("data", (chunk: Buffer) => {
     handler.onChunk(chunk.toString("utf8"));
@@ -164,9 +166,15 @@ export async function runTurn({ session, userMessage, runtimeId }: RunTurnArgs):
       if (stderrBuf.trim()) {
         broadcast(session.id, { type: "status", phase: "agent-text", data: { stderr: stderrBuf.trim() } });
       }
-      if (assistantText.trim()) {
-        appendMessage(session.projectId, "assistant", assistantText.trim());
-        broadcast(session.id, { type: "chat:message", role: "assistant", content: assistantText.trim() });
+      if (assistantText.trim() || reasoningText.trim()) {
+        const reasoning = reasoningText.trim() || undefined;
+        appendMessage(session.projectId, "assistant", assistantText.trim(), reasoning);
+        broadcast(session.id, {
+          type: "chat:message",
+          role: "assistant",
+          content: assistantText.trim(),
+          reasoning,
+        });
       }
       broadcast(session.id, { type: "status", phase: "end", data: { code } });
       log.info({ sessionId: session.id, code }, "agent-loop: closed");

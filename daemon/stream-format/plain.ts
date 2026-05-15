@@ -10,7 +10,15 @@ export interface PlainStreamHandler {
   finalize(): string;
 }
 
-export function createPlainStreamHandler(session: Session, addText: (t: string) => void): PlainStreamHandler {
+export function createPlainStreamHandler(
+  session: Session,
+  addText: (t: string) => void,
+  // Plain stdout has no structured reasoning channel (Qwen/Nessy --yolo
+  // emits answer text only; any "thinking" is inline prose we can't
+  // reliably separate). Accepted for signature parity; unused. Structured
+  // reasoning requires a stream-json-capable fork + streamFormat override.
+  _addReasoning: (t: string) => void
+): PlainStreamHandler {
   return {
     onChunk(chunk: string) {
       if (!chunk) return;

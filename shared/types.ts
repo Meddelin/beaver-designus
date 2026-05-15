@@ -115,7 +115,7 @@ export interface Prototype {
 export type SseEvent =
   | { type: "status"; phase: "start" | "agent-text" | "agent-thinking" | "tool-call" | "end"; data?: any }
   | { type: "error"; phase?: "agent" | "tool" | "transport"; message: string; data?: any }
-  | { type: "chat:message"; role: "assistant" | "system"; content: string }
+  | { type: "chat:message"; role: "assistant" | "system"; content: string; reasoning?: string }
   | { type: "prototype:set-root"; revision: number; root: PrototypeNode | null }
   | { type: "prototype:patch"; revision: number; patch: TreePatch[] };
 

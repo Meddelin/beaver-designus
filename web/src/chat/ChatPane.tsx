@@ -2,18 +2,15 @@ import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { User, Sparkles, AlertTriangle } from "lucide-react";
 import { Markdown } from "./Markdown.tsx";
-import { ToolCallCard, type ToolCallEntry } from "./ToolCallCard.tsx";
+import { ToolTimeline } from "./ToolCallCard.tsx";
+import { ReasoningDisclosure } from "./Reasoning.tsx";
 import { StreamingCaret } from "./StreamingText.tsx";
 import { Composer } from "./Composer.tsx";
 import { Pill } from "../ui/primitives.tsx";
 import { cn } from "../lib/cn.ts";
+import type { ChatMessage } from "../workspace/turn-model.ts";
 
-export interface ChatMessage {
-  id: string;
-  kind: "user" | "assistant" | "system" | "tool" | "error";
-  content: string;
-  tool?: ToolCallEntry;
-}
+export type { ChatMessage };
 
 export function ChatPane({
   messages,
@@ -31,11 +28,16 @@ export function ChatPane({
   const transcriptRef = React.useRef<HTMLDivElement>(null);
   const busy = status?.phase === "starting" || status?.phase === "running";
 
+  const last = messages[messages.length - 1];
+  const streamSig =
+    messages.length +
+    ":" +
+    (last ? (last.content?.length ?? 0) + (last.reasoning?.length ?? 0) + (last.steps?.length ?? 0) : 0);
   React.useEffect(() => {
     const el = transcriptRef.current;
     if (!el) return;
     el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  }, [messages.length]);
+  }, [streamSig]);
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-paper-0">
@@ -45,12 +47,8 @@ export function ChatPane({
       >
         {messages.length === 0 ? <EmptyHint /> : null}
         <AnimatePresence initial={false}>
-          {messages.map((m, i) => (
-            <MessageRow
-              key={m.id}
-              message={m}
-              streaming={busy && i === messages.length - 1 && m.kind === "assistant"}
-            />
+          {messages.map((m) => (
+            <MessageRow key={m.id} message={m} streaming={Boolean(m.live)} />
           ))}
         </AnimatePresence>
       </div>
@@ -84,13 +82,6 @@ function MessageRow({
   message: ChatMessage;
   streaming: boolean;
 }): React.ReactElement {
-  if (message.kind === "tool" && message.tool) {
-    return (
-      <div className="pl-1">
-        <ToolCallCard entry={message.tool} />
-      </div>
-    );
-  }
   if (message.kind === "system") {
     return (
       <div className="text-[11.5px] text-ink-3 text-center font-mono uppercase tracking-widest py-1">
@@ -133,10 +124,24 @@ function MessageRow({
         {isUser ? (
           <p className="text-[13.5px] whitespace-pre-wrap m-0">{message.content}</p>
         ) : (
-          <>
-            <Markdown>{message.content}</Markdown>
-            {streaming ? <StreamingCaret visible /> : null}
-          </>
+          <div className="flex flex-col gap-2">
+            {message.reasoning ? (
+              <ReasoningDisclosure
+                text={message.reasoning}
+                active={Boolean(message.reasoningActive)}
+                startedAt={message.startedAt}
+                endedAt={message.reasoningEndedAt}
+              />
+            ) : null}
+            {message.steps && message.steps.length > 0 ? (
+              <ToolTimeline steps={message.steps} />
+            ) : null}
+            {message.content ? <Markdown>{message.content}</Markdown> : null}
+            {streaming && !message.content && !message.reasoning && (!message.steps || message.steps.length === 0) ? (
+              <span className="text-[12.5px] text-ink-3 italic">working…</span>
+            ) : null}
+            {streaming && message.content ? <StreamingCaret visible /> : null}
+          </div>
         )}
       </div>
     </motion.div>

@@ -5,6 +5,7 @@ import { cn } from "../lib/cn.ts";
 import { toast } from "sonner";
 import { api, type ProjectSummary } from "../api/client.ts";
 import { ChatPane, type ChatMessage } from "../chat/ChatPane.tsx";
+import { applySse, rehydrateMessages } from "./turn-model.ts";
 import { PreviewPane } from "../preview/PreviewPane.tsx";
 import { InspectorDrawer } from "../manifest-browser/Drawer.tsx";
 import { Topbar } from "./Topbar.tsx";
@@ -47,31 +48,9 @@ export function WorkspaceView({
         });
       }
 
-      // Rehydrate chat from durable storage: weave messages and tool_calls by created_at.
-      const items: Array<{ created_at: number; msg: ChatMessage }> = [];
-      for (const m of history) {
-        items.push({
-          created_at: m.created_at,
-          msg: {
-            id: m.id,
-            kind: m.role === "user" ? "user" : m.role === "assistant" ? "assistant" : "system",
-            content: m.content,
-          },
-        });
-      }
-      for (const t of toolCalls) {
-        items.push({
-          created_at: t.created_at,
-          msg: {
-            id: t.id,
-            kind: "tool",
-            content: t.tool_name,
-            tool: { id: t.id, name: t.tool_name, input: t.input, output: t.output },
-          },
-        });
-      }
-      items.sort((a, b) => a.created_at - b.created_at);
-      setMessages(items.map((i) => i.msg));
+      // Rehydrate chat from durable storage: group tool calls into their
+      // owning assistant turn block (mirrors the live inline layout).
+      setMessages(rehydrateMessages(history, toolCalls));
 
       const { sessionId } = await api.createSession(project.id);
       if (cancelled) return;
@@ -91,40 +70,22 @@ export function WorkspaceView({
       return;
     }
     if (e.type === "error") {
-      pushMsg({ id: cryptoId(), kind: "error", content: e.message });
       setStatus({ phase: "error" });
       toast.error(e.message);
+      setMessages((prev) => applySse(prev, e));
       return;
     }
     if (e.type === "chat:message") {
-      pushMsg({ id: cryptoId(), kind: e.role === "assistant" ? "assistant" : "system", content: e.content });
+      setMessages((prev) => applySse(prev, e));
       return;
     }
     if (e.type === "status") {
-      if (e.phase === "start") {
-        setStatus({ phase: "running", runtime: e.data?.runtime, version: e.data?.version });
-        return;
-      }
-      if (e.phase === "end") {
-        setStatus({ phase: "idle" });
-        return;
-      }
-      if (e.phase === "tool-call") {
-        const name = e.data?.name;
-        const input = e.data?.input;
-        const result = e.data?.result;
-        if (name && input !== undefined) {
-          pushMsg({
-            id: cryptoId(),
-            kind: "tool",
-            content: name,
-            tool: { id: cryptoId(), name, input },
-          });
-        } else if (result !== undefined) {
-          // skip — output collapsed into prior tool card via expand UI for now
-        }
-        return;
-      }
+      if (e.phase === "start") setStatus({ phase: "running", runtime: e.data?.runtime, version: e.data?.version });
+      else if (e.phase === "end") setStatus({ phase: "idle" });
+      // agent-text / agent-thinking / tool-call / end all fold into the
+      // live turn block via the pure reducer.
+      setMessages((prev) => applySse(prev, e));
+      return;
     }
   };
 

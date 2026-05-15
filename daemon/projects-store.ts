@@ -99,10 +99,21 @@ export function savePrototype(projectId: string, proto: Prototype): void {
   db.prepare("UPDATE projects SET updated_at = ? WHERE id = ?").run(now, projectId);
 }
 
-export function listMessages(projectId: string, limit = 200): Array<{ id: string; role: string; content: string; created_at: number }> {
+export function listMessages(
+  projectId: string,
+  limit = 200
+): Array<{ id: string; role: string; content: string; reasoning: string | null; created_at: number }> {
   return db
-    .prepare("SELECT id, role, content, created_at FROM messages WHERE project_id = ? ORDER BY created_at ASC LIMIT ?")
-    .all(projectId, limit) as Array<{ id: string; role: string; content: string; created_at: number }>;
+    .prepare(
+      "SELECT id, role, content, reasoning, created_at FROM messages WHERE project_id = ? ORDER BY created_at ASC LIMIT ?"
+    )
+    .all(projectId, limit) as Array<{
+    id: string;
+    role: string;
+    content: string;
+    reasoning: string | null;
+    created_at: number;
+  }>;
 }
 
 export function listToolCalls(projectId: string, limit = 500): Array<{ id: string; tool_name: string; input_json: string; output_json: string; revision_after: number; created_at: number }> {
@@ -111,15 +122,16 @@ export function listToolCalls(projectId: string, limit = 500): Array<{ id: strin
     .all(projectId, limit) as Array<{ id: string; tool_name: string; input_json: string; output_json: string; revision_after: number; created_at: number }>;
 }
 
-export function appendMessage(projectId: string, role: "user" | "assistant" | "system-status", content: string): string {
+export function appendMessage(
+  projectId: string,
+  role: "user" | "assistant" | "system-status",
+  content: string,
+  reasoning?: string
+): string {
   const id = ulid();
-  db.prepare("INSERT INTO messages (id, project_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)").run(
-    id,
-    projectId,
-    role,
-    content,
-    Date.now()
-  );
+  db.prepare(
+    "INSERT INTO messages (id, project_id, role, content, reasoning, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+  ).run(id, projectId, role, content, reasoning ?? null, Date.now());
   return id;
 }
 

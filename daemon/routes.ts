@@ -205,9 +205,26 @@ export function registerRoutes(app: Express): void {
     const project = getProject(projectId);
     if (!project) return res.status(404).json({ error: "project not found" });
 
+    // Tool-call timeline (single source of truth across ALL stream
+    // formats incl. plain/Nessy — stdout tool_use is no longer
+    // broadcast). One id correlates the running→done/error lifecycle.
+    const callId = ulid();
+    broadcast(sessionId, {
+      type: "status",
+      phase: "tool-call",
+      data: { id: callId, name: toolName, input, state: "running" },
+    });
+
     const proto = loadPrototype(projectId);
     const result = applyToolCall(proto, toolName, input);
-    if (!result.ok) return res.status(400).json({ error: result.error });
+    if (!result.ok) {
+      broadcast(sessionId, {
+        type: "status",
+        phase: "tool-call",
+        data: { id: callId, name: toolName, state: "error", error: result.error },
+      });
+      return res.status(400).json({ error: result.error });
+    }
 
     proto.revision += 1;
     savePrototype(projectId, proto);
@@ -219,6 +236,11 @@ export function registerRoutes(app: Express): void {
       revisionAfter: proto.revision,
     });
 
+    broadcast(sessionId, {
+      type: "status",
+      phase: "tool-call",
+      data: { id: callId, name: toolName, state: "done", result: result.output },
+    });
     broadcast(sessionId, { type: "prototype:set-root", revision: proto.revision, root: proto.root });
 
     res.json(result.output);
