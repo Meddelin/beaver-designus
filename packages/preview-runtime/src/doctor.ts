@@ -234,15 +234,19 @@ const checks: Check[] = [
           };
         }
       }
-      // 3. No global stylesheets anywhere — likely (not certainly) why
-      //    components look unstyled. Advisory, not a hard fail.
+      // 3. No global stylesheets anywhere is NOT a failure: CSS-modules /
+      //    runtime-css-in-js DSes legitimately self-import their CSS, and an
+      //    explicit `globalStylesheets: []` is a conscious operator choice.
+      //    We can't know from here whether components self-import, so this is
+      //    advisory only — surfaced on the console, never blocks bring-up.
       const total = perDs.reduce((n, d) => n + (d.resolved?.length ?? 0), 0);
       if (perDs.length > 0 && total === 0) {
-        return {
-          ok: false,
-          reason: "no DS declares styles.globalStylesheets — DS component CSS may not reach the preview (unstyled / collapsed layout)",
-          fix: "in manifest.config.json add `designSystems[].styles.globalStylesheets` pointing at the DS's reset/base/aggregated CSS (see docs/audit-by-local-agent.md); if the DS components self-import their CSS this can be left empty",
-        };
+        const strategies = [...new Set(perDs.map((d) => d.strategy))].join(", ");
+        process.stdout.write(
+          `           note: no DS declares styles.globalStylesheets (strategy: ${strategies}). ` +
+            `Fine for self-importing CSS-modules; if components look unstyled, add the DS's base/reset CSS to ` +
+            `manifest.config.json designSystems[].styles.globalStylesheets.\n`
+        );
       }
       return { ok: true };
     },

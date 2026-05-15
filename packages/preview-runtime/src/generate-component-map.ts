@@ -13,7 +13,8 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSy
 import { join, resolve, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { resolvePreviewEntry } from "./resolve-entry.ts";
+import { resolvePreviewEntry, resolveSubpathExports } from "./resolve-entry.ts";
+import { stripStyleModuleErrors, extractTs2352Ids } from "./tsc-error-utils.ts";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, "..", "..", "..");
@@ -40,6 +41,10 @@ interface ScannedPkg {
   dir: string;
   entry: string | null;
   tried: string[];
+  /** Concrete subpath exports → absolute file (F4). */
+  subpaths: Record<string, string>;
+  /** Absolute dir backing a `"./*"` wildcard export (F4). */
+  wildcardBase: string | null;
 }
 
 interface ManifestEntryLite {
@@ -147,25 +152,66 @@ function run(): void {
   // First pass: write the map (post pre-emptive drop).
   emit(byPkg, droppedPackages);
 
-  // Validate by running TS on just the generated file. We use the project's
-  // tsconfig so module resolution mirrors the dev server.
-  const tsCheck = spawnSync(
-    process.platform === "win32" ? "npx.cmd" : "npx",
-    ["tsc", "--noEmit", "--pretty", "false", "-p", existsSync(TSCONFIG_DEV_PATH) ? "tsconfig.dev.json" : "tsconfig.json"],
-    { cwd: PROJECT_ROOT, encoding: "utf8" }
-  );
-
-  if (tsCheck.status === 0) {
+  let tscOut = runTscStripped();
+  if (tscOut.status === 0) {
     finalize(byPkg, droppedPackages, warnings);
     return;
   }
 
-  // Parse TS errors. Distinguish two failure classes:
+  // F1 — TS2352 reconciliation. tsc emits
+  //   component-map.ts(L,C): error TS2352: Conversion of type 'XDescriptor'
+  //   to type 'ComponentType<any>' may be a mistake ...
+  // for an export that ISN'T a React component (e.g. a data/type
+  // descriptor const that discovery mistook for a component). The compiler
+  // is the deterministic oracle here — far better than name heuristics
+  // (*Descriptor/*Type). Drop ONLY the offending export (not its package),
+  // re-emit, repeat until convergence.
+  let guard = 0;
+  while (guard++ < 6) {
+    const badIds = parseNonComponentIds(tscOut.text);
+    if (badIds.size === 0) break;
+    const removedByPkg = new Map<string, { ids: string[]; type: string }>();
+    for (const pkg of [...byPkg.keys()]) {
+      const inner = byPkg.get(pkg)!;
+      for (const [exportName, entry] of [...inner.entries()]) {
+        const bad = badIds.get(entry.id);
+        if (!bad) continue;
+        inner.delete(exportName);
+        const rec = removedByPkg.get(pkg) ?? { ids: [], type: bad };
+        rec.ids.push(entry.id);
+        removedByPkg.set(pkg, rec);
+      }
+      if (inner.size === 0) {
+        const rec = removedByPkg.get(pkg);
+        droppedPackages.push({
+          packageName: pkg,
+          reason: `all exports are non-components (tsc TS2352 — not assignable to React.ComponentType)`,
+          components: rec?.ids ?? [],
+        });
+        byPkg.delete(pkg);
+      }
+    }
+    for (const [pkg, rec] of removedByPkg) {
+      if (!byPkg.has(pkg)) continue; // package still has real components
+      warnings.push(
+        `dropped ${rec.ids.length} non-component export(s) from ${pkg} ` +
+          `(tsc TS2352, e.g. type '${rec.type}'): ${rec.ids.join(", ")}`
+      );
+    }
+    emit(byPkg, droppedPackages);
+    tscOut = runTscStripped();
+    if (tscOut.status === 0) {
+      finalize(byPkg, droppedPackages, warnings);
+      return;
+    }
+  }
+
+  // Parse remaining TS errors. Distinguish:
   //   TS2307 ("Cannot find module ...")        → resolution / config issue.
   //     Don't drop packages — surface the failure with a concrete fix.
   //   TS2305 / TS2724 ("has no exported member ...")  → real export
   //     mismatch on the DS side. Drop the specific package(s) and retry.
-  const errors = (tsCheck.stdout ?? "") + "\n" + (tsCheck.stderr ?? "");
+  const errors = tscOut.text;
   const cmErrorLines = errors.split(/\r?\n/).filter((l) => l.includes("component-map.ts") && l.includes("error"));
   const hasResolutionErrors = cmErrorLines.some((l) => /error TS2307/.test(l));
   if (hasResolutionErrors) {
@@ -203,13 +249,9 @@ function run(): void {
 
   // Second pass with failing packages removed.
   emit(byPkg, droppedPackages);
-  const tsCheck2 = spawnSync(
-    process.platform === "win32" ? "npx.cmd" : "npx",
-    ["tsc", "--noEmit", "--pretty", "false", "-p", existsSync(TSCONFIG_DEV_PATH) ? "tsconfig.dev.json" : "tsconfig.json"],
-    { cwd: PROJECT_ROOT, encoding: "utf8" }
-  );
+  const tsCheck2 = runTscStripped();
   if (tsCheck2.status !== 0) {
-    const remaining = (tsCheck2.stdout ?? "") + "\n" + (tsCheck2.stderr ?? "");
+    const remaining = tsCheck2.text;
     const cmErrors = remaining.split(/\r?\n/).filter((l) => l.includes("component-map.ts") && l.includes("error"));
     if (cmErrors.length > 0) {
       warnings.push("tsc still reports errors after dropping failing packages — see tscOutput");
@@ -367,7 +409,8 @@ function scanDsPackages(): Map<string, ScannedPkg> {
       }
       if (typeof pj.name !== "string" || !pj.name) continue;
       const { entry, tried } = resolvePreviewEntry(pkgDir, pj);
-      map.set(pj.name, { dir: pkgDir, entry, tried });
+      const { subpaths, wildcardBase } = resolveSubpathExports(pkgDir, pj);
+      map.set(pj.name, { dir: pkgDir, entry, tried, subpaths, wildcardBase });
     }
   }
   return map;
@@ -399,8 +442,12 @@ function writeTsconfigDev(pkgMap: Map<string, ScannedPkg>): string[] {
   const writtenAliases: string[] = [];
 
   for (const [name, info] of pkgMap) {
-    // Deep-import alias always maps to the package dir.
-    dsPaths[`${name}/*`] = [`${rel(info.dir)}/*`];
+    // Concrete subpath exports first (most specific): @x/pkg/legacy → file.
+    for (const [sub, file] of Object.entries(info.subpaths)) {
+      dsPaths[`${name}/${sub}`] = [rel(file)];
+    }
+    // Deep-import wildcard → the `"./*"` export base if declared, else dir.
+    dsPaths[`${name}/*`] = [`${rel(info.wildcardBase ?? info.dir)}/*`];
     if (info.entry) {
       dsPaths[name] = [rel(info.entry)];
       writtenAliases.push(`${name} → ${rel(info.entry)}`);
@@ -426,11 +473,18 @@ function writeTsconfigDev(pkgMap: Map<string, ScannedPkg>): string[] {
  * `npm run preview:doctor` can report them. Lives under manifest-data/
  * (gitignored) — regenerated every wire, never committed. */
 function writePreviewAliases(pkgMap: Map<string, ScannedPkg>): void {
-  const packages: Record<string, { entry: string | null; dir: string }> = {};
+  const packages: Record<
+    string,
+    { entry: string | null; dir: string; subpaths: Record<string, string>; wildcardBase: string | null }
+  > = {};
   for (const [name, info] of pkgMap) {
+    const subpaths: Record<string, string> = {};
+    for (const [sub, file] of Object.entries(info.subpaths)) subpaths[sub] = file.replace(/\\/g, "/");
     packages[name] = {
       entry: info.entry ? info.entry.replace(/\\/g, "/") : null,
       dir: info.dir.replace(/\\/g, "/"),
+      subpaths,
+      wildcardBase: info.wildcardBase ? info.wildcardBase.replace(/\\/g, "/") : null,
     };
   }
   const out = {
@@ -576,6 +630,27 @@ function aliasFor(pkg: string, exportName: string): string {
  *   ".../component-map.ts(7,X): error TS2307: Cannot find module '@tui-react/foo'..."
  *   ".../component-map.ts(7,X): error TS2724: '"@tui-react/foo"' has no exported member 'Bar'..."
  */
+/* Run `tsc --noEmit` over the generated map (dev tsconfig if present) and
+ * return the combined, style-error-stripped output. */
+function runTscStripped(): { status: number | null; text: string } {
+  const r = spawnSync(
+    process.platform === "win32" ? "npx.cmd" : "npx",
+    ["tsc", "--noEmit", "--pretty", "false", "-p", existsSync(TSCONFIG_DEV_PATH) ? "tsconfig.dev.json" : "tsconfig.json"],
+    { cwd: PROJECT_ROOT, encoding: "utf8" }
+  );
+  return { status: r.status, text: stripStyleModuleErrors((r.stdout ?? "") + "\n" + (r.stderr ?? "")) };
+}
+
+/* Map every TS2352 ("Conversion of type 'X' to ComponentType<any> may be a
+ * mistake") on component-map.ts back to the canonical entry id on that
+ * line. These exports are NOT React components (data/type descriptors that
+ * discovery mis-picked) and must be removed from the map. Returns
+ * id → offending-type-name. */
+function parseNonComponentIds(tscText: string): Map<string, string> {
+  if (!existsSync(OUT_FILE)) return new Map();
+  return extractTs2352Ids(tscText, readFileSync(OUT_FILE, "utf8").split(/\r?\n/));
+}
+
 function extractFailingPackages(stderr: string, byPkg: Map<string, unknown>): Set<string> {
   const failing = new Set<string>();
   const packagePattern = /['"]([@\w][\w@\/\-.]+)['"]/g;

@@ -65,16 +65,30 @@ function readDsScopeAliases(): Array<{ find: RegExp; replacement: string }> {
   const aliases: Array<{ find: RegExp; replacement: string }> = [];
   try {
     const j = JSON.parse(readFileSync(sidecar, "utf8"));
-    const pkgs: Record<string, { entry: string | null; dir: string }> = j.packages ?? {};
+    type PkgAlias = {
+      entry: string | null;
+      dir: string;
+      subpaths?: Record<string, string>;
+      wildcardBase?: string | null;
+    };
+    const pkgs: Record<string, PkgAlias> = j.packages ?? {};
     for (const [name, info] of Object.entries(pkgs)) {
       const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      // Exact-match alias first (Vite resolves alias array in order).
+      // Order matters — Vite resolves the alias array in sequence, so the
+      // most specific patterns must come first:
+      //   1. concrete subpath exports  (@x/pkg/legacy → exact file)
+      //   2. exact package root        (@x/pkg → entry)
+      //   3. deep-import wildcard       (@x/pkg/* → wildcard base | dir)
+      for (const [sub, file] of Object.entries(info.subpaths ?? {})) {
+        const subEsc = sub.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        aliases.push({ find: new RegExp(`^${esc}/${subEsc}$`), replacement: file });
+      }
       if (info.entry) {
         aliases.push({ find: new RegExp(`^${esc}$`), replacement: info.entry });
       }
-      // Deep-import alias → package dir.
-      if (info.dir) {
-        aliases.push({ find: new RegExp(`^${esc}/(.*)$`), replacement: `${info.dir}/$1` });
+      const deepBase = info.wildcardBase || info.dir;
+      if (deepBase) {
+        aliases.push({ find: new RegExp(`^${esc}/(.*)$`), replacement: `${deepBase}/$1` });
       }
     }
   } catch {}

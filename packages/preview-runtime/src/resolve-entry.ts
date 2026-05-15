@@ -43,6 +43,23 @@ function accept(pkgDir: string, rel: string | undefined, tried: string[]): strin
   return existsSync(abs) ? abs : null;
 }
 
+/* Resolve a single exports VALUE (string | conditions object) to a path
+ * string, source-first, never `types`. */
+function pickConditionString(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return undefined;
+  const conds = value as Record<string, unknown>;
+  for (const k of ["source", "development", "import", "module", "browser", "default", "require"]) {
+    const v = conds[k];
+    if (typeof v === "string") return v;
+    if (v && typeof v === "object") {
+      const nested = pickConditionString(v);
+      if (nested) return nested;
+    }
+  }
+  return undefined;
+}
+
 /* From a package.json `exports` value, pull the best candidate for the `.`
  * entry. Handles: string, { ".": <string|conditions> }, or a bare conditions
  * object. We never follow the `types` condition (declaration-only). */
@@ -50,20 +67,57 @@ function candidateFromExports(exp: unknown): string | undefined {
   if (typeof exp === "string") return exp;
   if (!exp || typeof exp !== "object") return undefined;
   const root = (exp as Record<string, unknown>)["."] ?? exp;
-  if (typeof root === "string") return root;
-  if (!root || typeof root !== "object") return undefined;
-  const conds = root as Record<string, unknown>;
-  // Source-first ordering. `types` deliberately excluded.
-  for (const k of ["source", "development", "import", "module", "browser", "default", "require"]) {
-    const v = conds[k];
-    if (typeof v === "string") return v;
-    // Nested conditions (e.g. { import: { default: "..." } }).
-    if (v && typeof v === "object") {
-      const nested = candidateFromExports(v);
-      if (nested) return nested;
+  return pickConditionString(root);
+}
+
+export interface SubpathExports {
+  /** "<subpath>" (no leading "./") → absolute on-disk loadable file. */
+  subpaths: Record<string, string>;
+  /** Absolute dir backing a `"./*"` wildcard export, if declared. */
+  wildcardBase: string | null;
+}
+
+/* Resolve every concrete subpath export ("./legacy", "./testing", …) to a
+ * real on-disk source file, plus a `"./*"` wildcard base dir. This is what
+ * lets the preview resolve internal DS imports like
+ * `export * from "@beaver-ui/date-range-picker/legacy"` — the root alias
+ * alone never covers subpaths. Declared dist/ targets that don't exist
+ * (source-only DS) fall back to the obvious source layouts. */
+export function resolveSubpathExports(
+  pkgDir: string,
+  pkgJson: Record<string, unknown>
+): SubpathExports {
+  const out: SubpathExports = { subpaths: {}, wildcardBase: null };
+  const exp = pkgJson.exports;
+  if (!exp || typeof exp !== "object" || Array.isArray(exp)) return out;
+
+  for (const [key, value] of Object.entries(exp as Record<string, unknown>)) {
+    if (key === "." || !key.startsWith("./")) continue;
+    const sub = key.slice(2); // "legacy", "*", "forms/*"
+
+    if (sub === "*" || sub.endsWith("/*")) {
+      const target = pickConditionString(value); // e.g. "./src/*"
+      if (target) {
+        const baseRel = target.replace(/^\.\//, "").replace(/\*.*$/, "").replace(/\/$/, "");
+        const baseAbs = join(pkgDir, baseRel);
+        if (existsSync(baseAbs)) out.wildcardBase = baseAbs;
+      }
+      continue;
     }
+
+    const declared = pickConditionString(value);
+    const tried: string[] = [];
+    const hit =
+      accept(pkgDir, declared, tried) ??
+      accept(pkgDir, `src/${sub}/index.ts`, tried) ??
+      accept(pkgDir, `src/${sub}/index.tsx`, tried) ??
+      accept(pkgDir, `${sub}/index.ts`, tried) ??
+      accept(pkgDir, `${sub}/index.tsx`, tried) ??
+      accept(pkgDir, `src/${sub}.ts`, tried) ??
+      accept(pkgDir, `src/${sub}.tsx`, tried);
+    if (hit) out.subpaths[sub] = hit;
   }
-  return undefined;
+  return out;
 }
 
 export function resolvePreviewEntry(
