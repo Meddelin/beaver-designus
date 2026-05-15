@@ -166,10 +166,11 @@ If the fork's binary name differs from upstream `qwen` (e.g. `qwen-corp.exe` or 
 
 Look for:
 - **Prompt input mode**: stdin (`-`)? Positional `--prompt <text>`?
-- **MCP config flag**: `--mcp-config <path>` (upstream), `--mcp <path>`, `--tool-config <path>`, `--tools-config <path>`?
+- **MCP config flag**: `--mcp-config <path>` (upstream), `--mcp <path>`, `--tool-config <path>`, `--tools-config <path>`? The daemon writes a ready per-session `mcp.json` (with `BEAVER_DESIGNUS_SESSION_ID`/`PROJECT_ID` already baked in); your only job is to point the CLI at it via `${mcpConfigPath}` in `buildArgs`.
+  - **If the fork has NO MCP argv flag at all** — it ingests MCP servers ONLY from a settings file / fixed config location (e.g. `~/.<tool>/settings.json` `mcpServers`) and there is no way to pass a path on the command line — then `runtimes.config.json` (which only customizes argv) **cannot** wire it. **STOP.** Record in the report under "Required next steps": *"Fork `<name>` exposes MCP only via `<the settings file/dir you found>`, no argv flag. The daemon currently delivers MCP as a per-session file path passed through argv (`${mcpConfigPath}`); a config-file delivery mode is a maintainer change, not a config one."* Do not hand-edit a global settings file (it has no per-session `SESSION_ID`/`PROJECT_ID` and will fail).
 - **Auto-approve / yolo flag**: `--yolo` (upstream), `--auto-approve`, `--no-confirm`, `--non-interactive`? **If no such flag exists, STOP** — the CLI will hang on every tool call. Write the gap into the report.
-- **Stream output**: any JSONL/streaming flag? If the events emitted match Claude Code's shape (`{type: "assistant", message: {content: [...]}}` etc.), you can use `"streamFormat": "claude-stream-json"`. If unsure, leave as `"plain"`.
-- **Other forks** may have ENTIRELY different ways of passing MCP (e.g. a config file in a fixed location, or a `--tools-from <dir>` flag pointing at a folder of tool definitions). The JSON config covers any argv shape — there's no upper bound on the patterns supported.
+- **Stream output**: any JSONL/streaming flag? If the events emitted match Claude Code's shape (`{type: "assistant", message: {content: [...]}}` etc.), you can use `"streamFormat": "claude-stream-json"` (this is also what surfaces the model's *reasoning* as a separate streamed block in the chat; `"plain"` streams the answer text live but cannot separate reasoning). If unsure, leave as `"plain"`.
+- **Coverage limit**: the JSON config covers any **argv** shape (flags, positionals, stdin) — there is no upper bound on argv patterns. It does **not** cover forks that take MCP only via a non-argv settings file; that is the STOP case above, not something you can express here.
 
 #### Step 3 — write the `runtimes.config.json`
 
